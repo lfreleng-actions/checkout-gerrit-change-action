@@ -95,6 +95,12 @@ runs:
           fi
         }
 
+        error=$(git remote set-url origin "${{ inputs.gerrit-url }}/${{ inputs.gerrit-project }}")
+        if [ $exit_code -ne 0 ]
+        then
+          report_error_and_exit "$error"
+        fi
+
         error=$(git fetch origin ${{ inputs.gerrit-refspec }})
         exit_code=$?
         if [ $exit_code -ne 0 ]
@@ -102,6 +108,7 @@ runs:
           fetch_from_gerrit "$error"
         fi
         git checkout FETCH_HEAD
+        echo "DEBUG: FETCH_HEAD: $(git rev-parse HEAD)"
 
         if [[ ${{ inputs.submodules }} = [Tt]rue ]]
         then
