@@ -1,10 +1,17 @@
-[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/lfit/checkout-gerrit-change-action/main.svg)](https://results.pre-commit.ci/latest/github/lfit/checkout-gerrit-change-action/main)
+<!--
+SPDX-License-Identifier: Apache-2.0
+SPDX-FileCopyrightText: 2025 The Linux Foundation
+-->
 
-# checkout-gerrit-change-action
+# Gerrit Change Checkout Action
 
 Checkout a mirrored Gerrit change.
 
-# Usage
+## checkout-gerrit-change-action
+
+[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/lfit/checkout-gerrit-change-action/main.svg)](https://results.pre-commit.ci/latest/github/lfit/checkout-gerrit-change-action/main)
+
+## Usage
 
 ```yaml
 - uses: lfit/checkout-gerrit-change-action@v0.5
@@ -43,7 +50,7 @@ Checkout a mirrored Gerrit change.
       # Default:
       token: ${{ github.token }}
 
-      # The base URL for the gerrit server. This is used if the ref can't be
+      # The base URL for the gerrit server. Used if the ref can't be
       # found in the GitHub repository
       gerrit-url: ${{ vars.GERRIT_URL }}
 
