@@ -11,6 +11,24 @@ Checkout a mirrored Gerrit change.
 
 [![pre-commit.ci status](https://results.pre-commit.ci/badge/github/lfit/checkout-gerrit-change-action/main.svg)](https://results.pre-commit.ci/latest/github/lfit/checkout-gerrit-change-action/main)
 
+## Inputs
+
+<!-- markdownlint-disable MD013 -->
+
+| Name           | Required | Default                  | Description                                                                                                                                  |
+| -------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| gerrit-refspec | True     | N/A                      | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z                                                                                |
+| gerrit-project | True     | N/A                      | The project in Gerrit                                                                                                                        |
+| delay          | False    | 10s                      | Delay in seconds to wait to make sure replication has finished                                                                               |
+| fetch-depth    | False    | 1                        | Number of commits to fetch. 0 indicates all history for all branches and tags                                                                |
+| repository     | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout                                                                                     |
+| ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event |
+| token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                     |
+| gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository                                                      |
+| submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules                              |
+
+<!-- markdownlint-enable MD013 -->
+
 ## Usage
 
 ```yaml
