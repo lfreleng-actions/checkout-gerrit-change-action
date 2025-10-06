@@ -3,6 +3,8 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 ci:
+  # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter
+  skip: [gha-workflow-linter]
   autofix_commit_msg: |
     Chore: pre-commit autofixes
 
@@ -12,15 +14,7 @@ ci:
 
     Signed-off-by: pre-commit-ci[bot] <pre-commit-ci@users.noreply.github.com>
 
-exclude: |
-  (?x)^(docs/conf.py|
-        \.mypy_cache/|
-        \.pytest_cache/|
-        \.ruff_cache/|
-        dist/|
-        build/|
-        coverage_html_report/|
-        \.venv/)
+exclude: "^docs/conf.py"
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -58,7 +52,7 @@ repos:
         types: [yaml]
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: 488940d9de1b658fac229e34c521d75a6ea476f2  # frozen: v0.14.5
+    rev: 740a8f85dd054f284b506c33d50b4b1f0d7d20d1  # frozen: v0.14.4
     hooks:
       - id: ruff
         files: ^(scripts|tests|custom_components)/.+\.py$
@@ -70,9 +64,6 @@ repos:
     rev: 9f70dc58c23dfcca1b97af99eaeee3140a807c7e  # frozen: v1.18.2
     hooks:
       - id: mypy
-        additional_dependencies:
-          - types-PyYAML
-          - types-requests
 
   - repo: https://github.com/btford/write-good
     rev: ab66ce10136dfad5146e69e70f82a3efac8842c1 # frozen: v1.0.8
@@ -109,8 +100,14 @@ repos:
     hooks:
       - id: codespell
 
+  - repo: https://github.com/lfreleng-actions/gha-workflow-linter
+    rev: 6e25590048a9b9c49d81656586dd083f47bb4f93  # frozen: v0.1.11
+    hooks:
+      - id: gha-workflow-linter
+        args: [lint, .github/workflows/, --verbose]
+
   - repo: https://github.com/python-jsonschema/check-jsonschema
-    rev: 16a6ad2fead09286ee6eb6b0a3fab55655a6c22a  # frozen: 0.35.0
+    rev: 83b816d020105076daac266dbf6bfed199a2da93  # frozen: 0.34.1
     hooks:
       - id: check-github-actions
       - id: check-github-workflows
