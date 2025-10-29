@@ -12,15 +12,7 @@ ci:
 
     Signed-off-by: pre-commit-ci[bot] <pre-commit-ci@users.noreply.github.com>
 
-exclude: |
-  (?x)^(docs/conf.py|
-        \.mypy_cache/|
-        \.pytest_cache/|
-        \.ruff_cache/|
-        dist/|
-        build/|
-        coverage_html_report/|
-        \.venv/)
+exclude: "^docs/conf.py"
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -70,9 +62,6 @@ repos:
     rev: 9f70dc58c23dfcca1b97af99eaeee3140a807c7e  # frozen: v1.18.2
     hooks:
       - id: mypy
-        additional_dependencies:
-          - types-PyYAML
-          - types-requests
 
   - repo: https://github.com/btford/write-good
     rev: ab66ce10136dfad5146e69e70f82a3efac8842c1 # frozen: v1.0.8
