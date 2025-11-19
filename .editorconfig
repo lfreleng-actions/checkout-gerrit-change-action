@@ -10,17 +10,14 @@ trim_trailing_whitespace = true
 indent_style = space
 indent_size = 4
 
-[*.json]
+[*.{json,yaml,yml}]
 indent_size = 2
 
 [*.markdown]
 max_line_length = 80
 
 [*.py]
-max_line_legth = 120
+max_line_length = 120
 
 [*.sh]
 max_line_length = 80
-
-[*.{yaml,yml}]
-indent_size = 2
