@@ -13,10 +13,12 @@ inputs:
     description: "The project in Gerrit"
     required: true
   delay:
+    # yamllint disable-line rule:line-length
     description: "Delay in seconds to wait to make sure replication has finished. Default: 10s"
     required: false
     default: "10s"
   fetch-depth:
+    # yamllint disable-line rule:line-length
     description: "Number of commits to fetch. 0 indicates all history for all branches and tags. Default 1"
     required: false
     default: "1"
@@ -33,9 +35,9 @@ inputs:
     default: ${{ github.sha }}
   token:
     description: >
-      Personal Access token (PAT) used to fetch the repository. The PAT is configured
-      with the local git config, which enables your scripts to run authenticated git
-      commands. The post-job step removes the PAT.
+      Personal Access token (PAT) used to fetch the repository. The PAT is
+      configured with the local git config, which enables your scripts to run
+      authenticated git commands. The post-job step removes the PAT.
 
       We recommend using a service account with the least permissions necessary.
       Also, when generating a new PAT, select the least scopes necessary.
