@@ -24,7 +24,7 @@ Checkout a mirrored Gerrit change.
 | repository     | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout                                                                                     |
 | ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event |
 | token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                     |
-| gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository                                                      |
+| gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository                                                         |
 | submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules                              |
 
 <!-- markdownlint-enable MD013 -->
