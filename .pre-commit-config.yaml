@@ -3,6 +3,8 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 ci:
+  # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter
+  skip: [gha-workflow-linter]
   autofix_commit_msg: |
     Chore: pre-commit autofixes
 
@@ -108,6 +110,12 @@ repos:
     rev: 63c8f8312b7559622c0d82815639671ae42132ac # frozen: v2.4.1
     hooks:
       - id: codespell
+
+  - repo: https://github.com/lfreleng-actions/gha-workflow-linter
+    rev: 6e25590048a9b9c49d81656586dd083f47bb4f93  # frozen: v0.1.11
+    hooks:
+      - id: gha-workflow-linter
+        args: [lint, .github/workflows/, --verbose]
 
   - repo: https://github.com/python-jsonschema/check-jsonschema
     rev: b035497fb64e3f9faa91e833331688cc185891e6  # frozen: 0.36.0
