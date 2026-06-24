@@ -58,8 +58,14 @@ runs:
   using: "composite"
   steps:
     - id: delay-checkout
-      run: sleep ${{ inputs.delay }}
       shell: bash
+      env:
+        INPUT_DELAY: ${{ inputs.delay }}
+      run: sleep -- "$INPUT_DELAY"
+    # The persisted checkout credentials are intentionally retained so the
+    # 'git fetch origin' step below can reach the (possibly private)
+    # repository; the token is configured into git by this checkout and the
+    # action uploads no artifacts that could leak the credential.
     - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       with:
         fetch-depth: ${{ inputs.fetch-depth }}
@@ -67,46 +73,74 @@ runs:
         ref: ${{ inputs.ref }}
         token: ${{ inputs.token }}
         submodules: ${{ inputs.submodules }}
+        persist-credentials: true # zizmor: ignore[artipacked]
     - id: gerrit-checkout
       shell: bash --noprofile --norc {0}
+      env:
+        INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
+        INPUT_GERRIT_URL: ${{ inputs.gerrit-url }}
+        INPUT_GERRIT_PROJECT: ${{ inputs.gerrit-project }}
+        INPUT_SUBMODULES: ${{ inputs.submodules }}
       # yamllint disable rule:line-length
       run: |
         set -x
 
         report_error_and_exit()
         {
-          default="fatal: couldn't find remote ref ${{ inputs.gerrit-refspec }}"
+          default="fatal: couldn't find remote ref $INPUT_GERRIT_REFSPEC"
           message=${1:-$default}
-          echo "$message"
-          # Log GitHub annotation
-          echo "::error::$message"
+          # Redact any embedded URL credentials (user:pass@host) before
+          # logging so a gerrit-url carrying userinfo cannot leak via the
+          # echoed message or the GitHub error annotation.
+          message=$(printf '%s' "$message" | sed -E 's#://[^/@[:space:]]+@#://***@#g')
+          printf '%s\n' "$message"
+          # Escape workflow-command metacharacters (%, CR, LF) before
+          # emitting the annotation so a multi-line or percent-containing
+          # git error cannot break the annotation or inject additional
+          # workflow commands. Escape '%' first to avoid double-escaping.
+          annotation=${message//'%'/'%25'}
+          annotation=${annotation//$'\r'/'%0D'}
+          annotation=${annotation//$'\n'/'%0A'}
+          echo "::error::$annotation"
           exit 1
         }
 
         fetch_from_gerrit()
         {
-          if [ "${{ inputs.gerrit-url }}x" == "x" ]
+          if [ -z "$INPUT_GERRIT_URL" ]
           then
             report_error_and_exit "$1"
           fi
 
-          error=$(git fetch ${{ inputs.gerrit-url }}/${{ inputs.gerrit-project }} ${{ inputs.gerrit-refspec }} 2>&1 > /dev/null)
+          # Disable xtrace around the fetch and its failure handling so a
+          # URL/refspec (or the resulting error, which git may echo with
+          # the full remote URL) carrying embedded credentials is not
+          # exposed via the build log.
+          set +x
+          error=$(git fetch -- "$INPUT_GERRIT_URL/$INPUT_GERRIT_PROJECT" "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
           exit_code=$?
           if [ $exit_code -ne 0 ]
           then
             report_error_and_exit "$error"
           fi
+          set -x
         }
 
-        error=$(git fetch origin ${{ inputs.gerrit-refspec }})
+        # Disable xtrace around the fetch and its failure handling so a
+        # refspec (or the resulting error, which git may echo with the
+        # full remote URL) carrying embedded credentials is not exposed
+        # via the build log.
+        set +x
+        error=$(git fetch -- origin "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
         exit_code=$?
         if [ $exit_code -ne 0 ]
         then
           fetch_from_gerrit "$error"
         fi
+        set -x
         git checkout FETCH_HEAD
 
-        if [[ ${{ inputs.submodules }} = [Tt]rue ]]
+        if [[ "$INPUT_SUBMODULES" = [Tt]rue ]]
         then
           git submodule update
         fi
