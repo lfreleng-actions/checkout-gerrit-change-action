@@ -3,6 +3,7 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 ci:
+  autofix_prs: false
   # pre-commit.ci sandbox prevents network calls; disable gha-workflow-linter
   skip: [gha-workflow-linter]
   autofix_commit_msg: |
