@@ -15,19 +15,43 @@ Checkout a mirrored Gerrit change.
 
 <!-- markdownlint-disable MD013 -->
 
-| Name           | Required | Default                  | Description                                                                                                                                  |
-| -------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| gerrit-refspec | True     | N/A                      | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z                                                                                |
-| gerrit-project | True     | N/A                      | The project in Gerrit                                                                                                                        |
-| delay          | False    | 10s                      | Delay in seconds to wait to make sure replication has finished                                                                               |
-| fetch-depth    | False    | 1                        | Number of commits to fetch. 0 indicates all history for all branches and tags                                                                |
-| repository     | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout                                                                                     |
-| ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event |
-| token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                     |
-| gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository                                                         |
-| submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules                              |
+| Name           | Required | Default                  | Description                                                                                                                                                |
+| -------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| gerrit-refspec | True     | N/A                      | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z                                                                                              |
+| gerrit-project | True     | N/A                      | The project in Gerrit                                                                                                                                      |
+| delay          | False    | 10s                      | Delay in seconds to wait to make sure replication has finished                                                                                             |
+| fetch-depth    | False    | 1                        | Number of commits to fetch. 0 indicates all history for all branches and tags                                                                              |
+| repository     | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout. Inside a reusable workflow the default names the caller; see [Checkout target](#checkout-target) |
+| ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event               |
+| token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                                   |
+| gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository                                                                       |
+| submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules                                            |
 
 <!-- markdownlint-enable MD013 -->
+
+## Checkout target
+
+The `repository` input defaults to `github.repository`, which names the
+repository hosting the workflow run. Inside a reusable workflow that is the
+caller, not the project under review. A central `.github` repository running
+checks for another project must name the target:
+
+```yaml
+- uses: lfreleng-actions/checkout-gerrit-change-action@v1.0.2
+  with:
+      gerrit-refspec: ${{ inputs.gerrit_refspec }}
+      gerrit-project: ${{ inputs.gerrit_project }}
+      gerrit-url: ${{ vars.GERRIT_URL }}
+      repository: ${{ inputs.repository || github.repository }}
+      ref: refs/heads/${{ inputs.gerrit_branch }}
+```
+
+Omitting `repository` while passing `ref` points the checkout at a branch the
+caller may not carry, which fails with `couldn't find remote ref`. Where the
+branch names happen to match, the checkout succeeds against the wrong code.
+
+When the checkout repository disagrees with `gerrit-project`, this action
+writes a warning to the log and the job summary before it checks anything out.
 
 ## Usage
 
