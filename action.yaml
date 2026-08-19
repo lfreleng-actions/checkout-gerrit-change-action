@@ -17,9 +17,13 @@ inputs:
     required: false
     default: "10s"
   fetch-depth:
-    description: "Number of commits to fetch. 0 indicates all history for all branches and tags. Default 1"
+    description: >
+      Number of commits to fetch. 0 indicates all history for all branches
+      and tags. The default of 2 guarantees the checked-out change commit's
+      parent is reachable, so parent-relative operations (e.g. git diff
+      HEAD~1) work even when the change has already merged. Default 2
     required: false
-    default: "1"
+    default: "2"
   repository:
     description: "Repository name with owner. For example actions/checkout"
     required: false
@@ -175,6 +179,7 @@ runs:
         INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
         INPUT_GERRIT_URL: ${{ inputs.gerrit-url }}
         INPUT_GERRIT_PROJECT: ${{ inputs.gerrit-project }}
+        INPUT_FETCH_DEPTH: ${{ inputs.fetch-depth }}
         INPUT_SUBMODULES: ${{ inputs.submodules }}
       # yamllint disable rule:line-length
       run: |
@@ -212,7 +217,7 @@ runs:
           # the full remote URL) carrying embedded credentials is not
           # exposed via the build log.
           set +x
-          error=$(git fetch -- "$INPUT_GERRIT_URL/$INPUT_GERRIT_PROJECT" "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
+          error=$(git fetch "${depth_args[@]}" -- "$INPUT_GERRIT_URL/$INPUT_GERRIT_PROJECT" "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
           exit_code=$?
           if [ $exit_code -ne 0 ]
           then
@@ -221,12 +226,25 @@ runs:
           set -x
         }
 
+        # A fetch into a shallow repository inherits the shallow
+        # boundary, which can graft away the change commit's parent --
+        # for example when the change has already merged and the branch
+        # tip IS the change commit. Apply the requested fetch depth to
+        # the refspec fetch so the parent stays reachable for consumers
+        # that diff against HEAD~1. Guarded by --is-shallow-repository
+        # so a full clone (fetch-depth: 0) is never silently truncated.
+        depth_args=()
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]
+        then
+          depth_args=("--depth=$INPUT_FETCH_DEPTH")
+        fi
+
         # Disable xtrace around the fetch and its failure handling so a
         # refspec (or the resulting error, which git may echo with the
         # full remote URL) carrying embedded credentials is not exposed
         # via the build log.
         set +x
-        error=$(git fetch -- origin "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
+        error=$(git fetch "${depth_args[@]}" -- origin "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
         exit_code=$?
         if [ $exit_code -ne 0 ]
         then
