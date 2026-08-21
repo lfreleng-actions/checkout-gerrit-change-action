@@ -20,7 +20,7 @@ Checkout a mirrored Gerrit change.
 | gerrit-refspec | True     | N/A                      | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z                                                                                              |
 | gerrit-project | True     | N/A                      | The project in Gerrit                                                                                                                                      |
 | delay          | False    | 10s                      | Delay in seconds to wait to make sure replication has finished                                                                                             |
-| fetch-depth    | False    | 1                        | Number of commits to fetch. 0 indicates all history for all branches and tags                                                                              |
+| fetch-depth    | False    | 2                        | Number of commits to fetch. 0 indicates all history for all branches and tags                                                                              |
 | repository     | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout. Inside a reusable workflow the default names the caller; see [Checkout target](#checkout-target) |
 | ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event               |
 | token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                                   |
@@ -53,6 +53,23 @@ branch names happen to match, the checkout succeeds against the wrong code.
 When the checkout repository disagrees with `gerrit-project`, this action
 writes a warning to the log and the job summary before it checks anything out.
 
+## Parent commit guarantee
+
+The action guarantees that the checked-out change commit's parent is
+reachable, so parent-relative operations such as `git diff HEAD~1` are
+safe for consumers. Two mechanisms enforce this invariant:
+
+- `fetch-depth` defaults to `2`, covering the change commit and its
+  parent.
+- When the working repository is shallow, the action applies the
+  requested `fetch-depth` to the change refspec fetch as well. Without
+  this, the fetch inherits the shallow boundary and can graft away the
+  parent — for example when the change has already merged and the
+  branch tip is the change commit itself.
+
+A full clone (`fetch-depth: 0`) is never truncated. Setting
+`fetch-depth: 1` restores the old behavior and breaks the guarantee.
+
 ## Usage
 
 ```yaml
@@ -67,10 +84,11 @@ writes a warning to the log and the job summary before it checks anything out.
       delay: "10s"
 
       # Number of commits to fetch. 0 indicates all history for all branches
-      # and tags.
+      # and tags. The default of 2 keeps the change commit's parent
+      # reachable for parent-relative diffs.
       #
-      # Default: 1
-      fetch-depth: "1"
+      # Default: 2
+      fetch-depth: "2"
 
       # Repository name with owner. For example, lfit/checkout-gerrit-change-action
       #
