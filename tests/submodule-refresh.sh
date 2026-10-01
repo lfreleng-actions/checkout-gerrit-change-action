@@ -4,8 +4,9 @@
 #
 # Checks that the gerrit-checkout step leaves submodules at the commits
 # the Gerrit change records, rather than at the branch tip that
-# actions/checkout populated them from. Getting this wrong fails
-# nothing: a scanner reads the stale submodule content and passes.
+# actions/checkout populated them from, and removes the ones the change
+# drops. Getting this wrong fails nothing: a scanner reads the stale
+# submodule content and passes.
 #
 # The step comes out of action.yaml, its 'shell:' included, and runs the
 # way the runner runs it, so the suite cannot drift from what the action
@@ -90,6 +91,20 @@ record() {
   git -C "$SRC/$name" update-index --add --cacheinfo "160000,$sha,$path"
 }
 
+# Drop a submodule from the next commit of a repository. Given a
+# message, track a file in its place, at a path its own tree holds too.
+drop() {
+  local name="$1" path="$2" msg="${3:-}"
+  git -C "$SRC/$name" rm -q --cached "$path"
+  git -C "$SRC/$name" config -f .gitmodules --remove-section "submodule.$path"
+  git -C "$SRC/$name" add .gitmodules
+  if [ -n "$msg" ]; then
+    mkdir -p "$SRC/$name/$path"
+    printf '%s\n' "$msg" > "$SRC/$name/$path/content.txt"
+    git -C "$SRC/$name" add "$path/content.txt"
+  fi
+}
+
 # Commit what is staged, push it to a ref, and print its SHA. The push
 # goes to the repository's origin unless a URL is given.
 commit() {
@@ -108,8 +123,11 @@ lower() {
     sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
-# The branch tip: super -> a (-> c, d), d
+# The branch tip: super -> a (-> c (-> f), d), d
+new_repo f
+F1="$(commit f refs/heads/main f1)"
 new_repo c
+record c f ../f.git "$F1"
 C1="$(commit c refs/heads/main c1)"
 new_repo d
 D1="$(commit d refs/heads/main d1)"
@@ -135,7 +153,8 @@ MODES=(false true TRUE recursive ' TRUE ' ' recursive ')
 # The gerrit- changes repeat the first three, published only to the
 # Gerrit server, so the step reaches them through its fallback fetch
 CHANGES=(bump add retarget add-unreachable nested-unreachable
-  gerrit-bump gerrit-add gerrit-retarget)
+  gerrit-bump gerrit-add gerrit-retarget
+  remove replace nested-remove nested-replace replace-populated)
 checkout_tip() {
   local ws="$1" mode="$2" recurse=()
   git init -q "$ws"
@@ -160,8 +179,26 @@ for m in "${!MODES[@]}"; do
   done
 done
 
+# 'false' leaves submodules to the caller. Where the change removes or
+# replaces d, populate it by hand, as a caller might, so that leaving it
+# alone is something the step does.
+for m in "${!MODES[@]}"; do
+  for c in "${!CHANGES[@]}"; do
+    if [ "$(lower "${MODES[m]}")" = false ]; then
+      case "${CHANGES[c]}" in
+        remove | replace-populated)
+          git -C "$WORK/ws-$m-$c" submodule -q update --init -- d
+          ;;
+      esac
+    fi
+  done
+done
+
 # The changes under review, each a child of the branch tip, published
 # after that checkout so the step has to fetch what they record.
+# c moves on with f, so a bump reaches three levels down
+F2="$(commit f refs/heads/main f2)"
+record c f ../f.git "$F2"
 C2="$(commit c refs/heads/main c2)"
 DF1="$(commit d-fork refs/heads/main df1)"
 # a moves on twice: bumping its nested c on main, then retargeting its
@@ -175,7 +212,9 @@ B1="$(commit b refs/heads/main b1)"
 # Indexed alongside CHANGES
 REFSPECS=(refs/changes/01/1/1 refs/changes/02/2/1 refs/changes/03/3/1
   refs/changes/04/4/1 refs/changes/05/5/1 refs/changes/06/6/1
-  refs/changes/07/7/1 refs/changes/08/8/1)
+  refs/changes/07/7/1 refs/changes/08/8/1 refs/changes/09/9/1
+  refs/changes/10/10/1 refs/changes/11/11/1 refs/changes/12/12/1
+  refs/changes/13/13/1)
 SHAS=()
 # bump: a (and through it, a/c) moves to a newer commit
 git -C "$SRC/super" checkout -q --detach "$S0"
@@ -225,6 +264,37 @@ record super d ../d-fork.git "$DF1"
 record super a ../a.git "$A3"
 SHAS[7]="$(commit super "${REFSPECS[7]}" gerrit-retarget "$GERRIT_REPO")"
 
+# Changes that drop a submodule populated at the branch tip, at the top
+# level and one down. A replacement tracks a file at a path the dropped
+# submodule's tree holds as well, so checking it out over the leftover
+# working tree would fail.
+# remove: d is dropped
+git -C "$SRC/super" checkout -q --detach "$S0"
+drop super d
+SHAS[8]="$(commit super "${REFSPECS[8]}" remove)"
+# replace: d becomes a directory of tracked files
+git -C "$SRC/super" checkout -q --detach "$S0"
+drop super d replace
+SHAS[9]="$(commit super "${REFSPECS[9]}" replace)"
+# nested-remove: a moves to a commit dropping its nested d
+git -C "$SRC/a" checkout -q --detach "$A1"
+drop a d
+A5="$(commit a refs/heads/nested-remove a5)"
+git -C "$SRC/super" checkout -q --detach "$S0"
+record super a ../a.git "$A5"
+SHAS[10]="$(commit super "${REFSPECS[10]}" nested-remove)"
+# nested-replace: a moves to a commit turning its nested d into files
+git -C "$SRC/a" checkout -q --detach "$A1"
+drop a d nested-replace
+A6="$(commit a refs/heads/nested-replace a6)"
+git -C "$SRC/super" checkout -q --detach "$S0"
+record super a ../a.git "$A6"
+SHAS[11]="$(commit super "${REFSPECS[11]}" nested-replace)"
+# replace-populated: replace again, for the workspaces where 'false'
+# finds d populated by hand
+git -C "$SRC/super" push -q origin "${SHAS[9]}:${REFSPECS[12]}"
+SHAS[12]="${SHAS[9]}"
+
 FORK_URL="file://$REMOTES/d-fork.git"
 
 ### Checks ###
@@ -264,6 +334,21 @@ url_of() {
   fi
 }
 
+# Every file at a path, '.git' included, with its first line, or
+# 'nothing' where the path is gone
+contents_of() {
+  if [ ! -e "$1" ]; then
+    echo 'nothing'
+    return
+  fi
+  (
+    cd "$1"
+    find . -type f | LC_ALL=C sort | while IFS= read -r file; do
+      printf '%s: %s\n' "$file" "$(head -n 1 "$file")"
+    done
+  )
+}
+
 # The annotation report_error_and_exit emits when a refresh fails, or
 # nothing where the refresh should succeed
 expected_error() {
@@ -274,6 +359,9 @@ expected_error() {
       ;;
     recursive:nested-unreachable)
       echo "::error::Unable to update nested submodules for $refspec"
+      ;;
+    false:replace-populated)
+      echo "::error::Unable to check out $refspec"
       ;;
   esac
 }
@@ -322,15 +410,27 @@ for m in "${!MODES[@]}"; do
       check "$tag: step reports the failed refresh" \
         "$(grep '^::error::' "$log" || true)" "$want_error"
     fi
-    check "$tag: superproject is at the change" \
-      "$(head_of "$ws")" "${SHAS[c]}"
+    # Where the checkout itself must fail, HEAD stays at the branch tip
+    if [ "$(lower "$mode"):$kind" = false:replace-populated ]; then
+      check "$tag: superproject stays at the branch tip" \
+        "$(head_of "$ws")" "$S0"
+    else
+      check "$tag: superproject is at the change" \
+        "$(head_of "$ws")" "${SHAS[c]}"
+    fi
 
     case "$(lower "$mode"):$kind" in
       false:*)
-        for path in a b d; do
+        for path in a b; do
           check "$tag: $path is left alone" \
             "$(head_of "$ws/$path")" 'not populated'
         done
+        # Populated by hand where the change removes or replaces it
+        want_d='not populated'
+        case "$kind" in
+          remove | replace-populated) want_d="$D1" ;;
+        esac
+        check "$tag: d is left alone" "$(head_of "$ws/d")" "$want_d"
         ;;
       *:bump)
         check "$tag: a follows the change" "$(head_of "$ws/a")" "$A2"
@@ -348,6 +448,29 @@ for m in "${!MODES[@]}"; do
         # So the failure reported under 'recursive' is the nested one
         check "$tag: a follows the change" "$(head_of "$ws/a")" "$A4"
         ;;
+      *:remove)
+        check "$tag: d, which the change removes, leaves nothing behind" \
+          "$(contents_of "$ws/d")" 'nothing'
+        ;;
+      *:nested-remove)
+        check "$tag: a follows the change" "$(head_of "$ws/a")" "$A5"
+        ;;
+      *:nested-replace)
+        check "$tag: a follows the change" "$(head_of "$ws/a")" "$A6"
+        check "$tag: nested a/d holds only the files a tracks there" \
+          "$(contents_of "$ws/a/d")" './content.txt: nested-replace'
+        ;;
+    esac
+
+    # Whatever 'submodules' says, the files a change tracks where a
+    # submodule was are checked out, with nothing left beside them,
+    # unless the caller's own submodule stands in the way
+    case "$(lower "$mode"):$kind" in
+      false:replace-populated) ;;
+      *:replace | *:replace-populated)
+        check "$tag: d holds only the files the change tracks there" \
+          "$(contents_of "$ws/d")" './content.txt: replace'
+        ;;
     esac
 
     case "$(lower "$mode"):$kind" in
@@ -363,6 +486,7 @@ for m in "${!MODES[@]}"; do
         ;;
       recursive:bump)
         check "$tag: nested a/c follows a" "$(head_of "$ws/a/c")" "$C2"
+        check "$tag: nested a/c/f follows a/c" "$(head_of "$ws/a/c/f")" "$F2"
         ;;
       recursive:add)
         check "$tag: nested b/c, under the added b, is populated" \
@@ -372,6 +496,10 @@ for m in "${!MODES[@]}"; do
         check "$tag: nested a/d follows a" "$(head_of "$ws/a/d")" "$DF1"
         check "$tag: nested a/d fetches from its new URL" \
           "$(url_of "$ws/a/d")" "$FORK_URL"
+        ;;
+      recursive:nested-remove)
+        check "$tag: nested a/d, which a drops, leaves nothing behind" \
+          "$(contents_of "$ws/a/d")" 'nothing'
         ;;
     esac
 
