@@ -79,7 +79,14 @@ commits the Gerrit change records, not the branch tip:
 - a submodule the change adds gets populated;
 - a submodule URL the change edits in `.gitmodules` becomes the URL git
   fetches from;
+- a submodule the change removes, or replaces with tracked files, leaves
+  no working tree behind for later steps to scan;
 - `recursive` does the same for nested submodules, one level at a time.
+
+The action deinitialises a removed submodule rather than deleting its
+repository, which stays under `.git/modules`, as `git submodule deinit`
+leaves it. With `submodules: false` the action leaves submodules alone,
+including any that an earlier step populated.
 
 `actions/checkout` stores the `token` credentials in each submodule it
 populates from the branch tip. A submodule that the change adds did not

@@ -54,7 +54,7 @@ inputs:
     description: >
       Whether to checkout submodules: `true` to checkout submodules or
       `recursive` to recursively checkout submodules. Submodules follow
-      the Gerrit change, including ones it adds or retargets.
+      the Gerrit change, including ones it adds, retargets or removes.
 
       Default: false
     default: "false"
@@ -227,6 +227,100 @@ runs:
           set -x
         }
 
+        # Print '<recorded commit> <path>' for each populated submodule of
+        # the repository in the current directory. foreach expands $sha1
+        # and $sm_path itself, so they stay in single quotes here.
+        populated_submodules()
+        {
+          # shellcheck disable=SC2016
+          git submodule foreach -q 'printf "%s %s\n" "$sha1" "$sm_path"'
+        }
+
+        # Deinitialise each populated submodule that commit $1 does not
+        # record as a submodule: one the change drops, or replaces with
+        # tracked files. Checking $1 out over it would leave its working
+        # tree behind, still holding code the change deleted, or abort on
+        # a file the change tracks at the same path. It has to happen
+        # before the checkout, while git still knows the path as a
+        # submodule. 'deinit' keeps the repository in .git/modules, as it
+        # always does, ready for a later change that restores it.
+        deinit_dropped()
+        (
+          set -o pipefail
+          populated_submodules |
+            while IFS= read -r line
+            do
+              path=${line#* }
+              entry=$(git --literal-pathspecs ls-tree "$1" -- "$path") || exit 1
+              case "$entry" in
+                '160000 '*) ;;
+                *)
+                  git --literal-pathspecs submodule deinit -f -q -- "$path" < /dev/null ||
+                    exit 1
+                  ;;
+              esac
+            done
+        )
+
+        # The same, one level down, for each populated submodule this
+        # repository now records at a new commit. 'update' fetches that
+        # commit and checks it out in one go, so fetch it here first the
+        # way 'update' would: what the remote advertises, then the
+        # commit by name.
+        deinit_dropped_nested()
+        (
+          set -o pipefail
+          populated_submodules |
+            while IFS= read -r line
+            do
+              commit=${line%% *}
+              (
+                cd -- "${line#* }" || exit 1
+                if [ "$(git rev-parse HEAD)" = "$commit" ]
+                then
+                  exit 0
+                fi
+                if ! git cat-file -e "$commit^{commit}" 2> /dev/null
+                then
+                  git fetch -q --no-recurse-submodules
+                  git cat-file -e "$commit^{commit}" 2> /dev/null ||
+                    git fetch -q --no-recurse-submodules origin "$commit" ||
+                    exit 1
+                fi
+                deinit_dropped "$commit"
+              ) < /dev/null || exit 1
+            done
+        )
+
+        # Move the submodules of the repository in the current directory
+        # to the commits it records. 'sync' carries a retargeted
+        # .gitmodules URL into the config before anything fetches, and
+        # '--init' populates a submodule the change adds.
+        # fetch.recurseSubmodules=false keeps each level's fetch out of
+        # the level below until that level has been synced.
+        update_submodules()
+        {
+          git submodule sync &&
+            { [ "$submodules" != recursive ] || deinit_dropped_nested; } &&
+            git -c fetch.recurseSubmodules=false submodule update --init
+        }
+
+        # 'recursive' walks one level at a time rather than passing
+        # --recursive to sync and update: a nested submodule's URL comes
+        # from its parent's .gitmodules at the parent's NEW commit, which
+        # only exists once the level above is updated. Each submodule is
+        # updated before the walk descends into it.
+        update_nested()
+        (
+          set -o pipefail
+          populated_submodules |
+            while IFS= read -r line
+            do
+              ( cd -- "${line#* }" && update_submodules && update_nested ) < /dev/null ||
+                exit 1
+            done
+        )
+
         # A fetch into a shallow repository inherits the shallow
         # boundary, which can graft away the change commit's parent --
         # for example when the change has already merged and the branch
@@ -258,23 +352,13 @@ runs:
           fetch_from_gerrit "$error"
         fi
         set -x
-        git checkout FETCH_HEAD
 
         # actions/checkout populated submodules for the branch tip; move
-        # them to the commits the change records. 'sync' carries a
-        # retargeted .gitmodules URL into the config before 'update'
-        # fetches, and '--init' populates a submodule the change adds.
-        # Trim and case-fold the input the way actions/checkout does
-        # (core.getInput trims whitespace), so every value that populated
-        # submodules there also refreshes them here.
-        #
-        # 'recursive' walks one level at a time rather than passing
-        # --recursive to sync and update: a nested submodule's URL comes
-        # from its parent's .gitmodules at the parent's NEW commit, which
-        # only exists once the level above is updated. foreach runs the
-        # command in each submodule before descending into it, and
-        # fetch.recurseSubmodules=false keeps each level's fetch out of
-        # the level below until that level has been synced.
+        # them to the commits the change records, and remove the ones it
+        # drops. Trim and case-fold the input the way actions/checkout
+        # does (core.getInput trims whitespace), so every value that
+        # populated submodules there also refreshes them here. 'false'
+        # leaves submodules alone.
         #
         # This shell runs without -e, so report failure explicitly rather
         # than pass having left the branch-tip content in place.
@@ -282,16 +366,26 @@ runs:
           tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         if [ "$submodules" = true ] || [ "$submodules" = recursive ]
         then
-          if ! { git submodule sync &&
-                 git -c fetch.recurseSubmodules=false submodule update --init; }
+          if ! deinit_dropped FETCH_HEAD
+          then
+            report_error_and_exit "Unable to remove submodules dropped by $INPUT_GERRIT_REFSPEC"
+          fi
+        fi
+        if ! git checkout FETCH_HEAD
+        then
+          report_error_and_exit "Unable to check out $INPUT_GERRIT_REFSPEC"
+        fi
+
+        if [ "$submodules" = true ] || [ "$submodules" = recursive ]
+        then
+          if ! update_submodules
           then
             report_error_and_exit "Unable to update submodules for $INPUT_GERRIT_REFSPEC"
           fi
         fi
         if [ "$submodules" = recursive ]
         then
-          if ! git -c fetch.recurseSubmodules=false submodule foreach --recursive \
-               'git submodule sync && git submodule update --init'
+          if ! update_nested
           then
             report_error_and_exit "Unable to update nested submodules for $INPUT_GERRIT_REFSPEC"
           fi
