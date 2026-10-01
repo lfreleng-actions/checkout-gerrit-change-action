@@ -25,7 +25,7 @@ Checkout a mirrored Gerrit change.
 | ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event               |
 | token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                                   |
 | gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository                                                                       |
-| submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules                                            |
+| submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules. See [Submodules](#submodules)             |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -69,6 +69,23 @@ safe for consumers. Two mechanisms enforce this invariant:
 
 A full clone (`fetch-depth: 0`) is never truncated. Setting
 `fetch-depth: 1` restores the old behavior and breaks the guarantee.
+
+## Submodules
+
+With `submodules: true` or `recursive`, the action moves submodules to the
+commits the Gerrit change records, not the branch tip:
+
+- a submodule the change moves checks out at its new commit;
+- a submodule the change adds gets populated;
+- a submodule URL the change edits in `.gitmodules` becomes the URL git
+  fetches from;
+- `recursive` does the same for nested submodules, one level at a time.
+
+`actions/checkout` stores the `token` credentials in each submodule it
+populates from the branch tip. A submodule that the change adds did not
+exist then, so git clones it without those credentials. When it names a
+private repository, the clone fails and the action reports the failure
+rather than leaving the submodule empty.
 
 ## Usage
 

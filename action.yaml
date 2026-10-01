@@ -53,7 +53,8 @@ inputs:
   submodules:
     description: >
       Whether to checkout submodules: `true` to checkout submodules or
-      `recursive` to recursively checkout submodules.
+      `recursive` to recursively checkout submodules. Submodules follow
+      the Gerrit change, including ones it adds or retargets.
 
       Default: false
     default: "false"
@@ -217,7 +218,7 @@ runs:
           # the full remote URL) carrying embedded credentials is not
           # exposed via the build log.
           set +x
-          error=$(git fetch "${depth_args[@]}" -- "$INPUT_GERRIT_URL/$INPUT_GERRIT_PROJECT" "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
+          error=$(git fetch --no-recurse-submodules "${depth_args[@]}" -- "$INPUT_GERRIT_URL/$INPUT_GERRIT_PROJECT" "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
           exit_code=$?
           if [ $exit_code -ne 0 ]
           then
@@ -239,12 +240,18 @@ runs:
           depth_args=("--depth=$INPUT_FETCH_DEPTH")
         fi
 
+        # Leave submodules out of the superproject fetch. By default git
+        # recurses into populated ones on demand, using the URLs the
+        # branch tip configured, so a change that retargets a submodule
+        # fails here asking the old remote for a commit only the new one
+        # holds. The refresh below fetches them once 'sync' has run.
+        #
         # Disable xtrace around the fetch and its failure handling so a
         # refspec (or the resulting error, which git may echo with the
         # full remote URL) carrying embedded credentials is not exposed
         # via the build log.
         set +x
-        error=$(git fetch "${depth_args[@]}" -- origin "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
+        error=$(git fetch --no-recurse-submodules "${depth_args[@]}" -- origin "$INPUT_GERRIT_REFSPEC" 2>&1 > /dev/null)
         exit_code=$?
         if [ $exit_code -ne 0 ]
         then
@@ -253,7 +260,39 @@ runs:
         set -x
         git checkout FETCH_HEAD
 
-        if [[ "$INPUT_SUBMODULES" = [Tt]rue ]]
+        # actions/checkout populated submodules for the branch tip; move
+        # them to the commits the change records. 'sync' carries a
+        # retargeted .gitmodules URL into the config before 'update'
+        # fetches, and '--init' populates a submodule the change adds.
+        # Trim and case-fold the input the way actions/checkout does
+        # (core.getInput trims whitespace), so every value that populated
+        # submodules there also refreshes them here.
+        #
+        # 'recursive' walks one level at a time rather than passing
+        # --recursive to sync and update: a nested submodule's URL comes
+        # from its parent's .gitmodules at the parent's NEW commit, which
+        # only exists once the level above is updated. foreach runs the
+        # command in each submodule before descending into it, and
+        # fetch.recurseSubmodules=false keeps each level's fetch out of
+        # the level below until that level has been synced.
+        #
+        # This shell runs without -e, so report failure explicitly rather
+        # than pass having left the branch-tip content in place.
+        submodules=$(printf '%s' "$INPUT_SUBMODULES" |
+          tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        if [ "$submodules" = true ] || [ "$submodules" = recursive ]
         then
-          git submodule update
+          if ! { git submodule sync &&
+                 git -c fetch.recurseSubmodules=false submodule update --init; }
+          then
+            report_error_and_exit "Unable to update submodules for $INPUT_GERRIT_REFSPEC"
+          fi
+        fi
+        if [ "$submodules" = recursive ]
+        then
+          if ! git -c fetch.recurseSubmodules=false submodule foreach --recursive \
+               'git submodule sync && git submodule update --init'
+          then
+            report_error_and_exit "Unable to update nested submodules for $INPUT_GERRIT_REFSPEC"
+          fi
         fi
