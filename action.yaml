@@ -3,7 +3,7 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 name: "checkout-gerrit-change"
-description: "Checkout a mirrored Gerrit change"
+description: "Checkout a Gerrit change, from its GitHub mirror or from Gerrit"
 
 inputs:
   gerrit-refspec:
@@ -13,7 +13,10 @@ inputs:
     description: "The project in Gerrit"
     required: true
   delay:
-    description: "Delay in seconds to wait to make sure replication has finished. Default: 10s"
+    description: >
+      Delay to wait for replication to the GitHub mirror to finish. Not
+      applied when the project has no mirror and the change comes from
+      Gerrit. Default: 10s
     required: false
     default: "10s"
   fetch-depth:
@@ -32,7 +35,10 @@ inputs:
     description: >
       The branch, tag or SHA to checkout. When checking out the repository that
       triggered a workflow, this defaults to the reference or SHA for that
-      event. Otherwise, uses the default branch.
+      event. Otherwise, uses the default branch. When the project has no
+      GitHub mirror, only a branch (refs/heads/<branch>) is fetched, as
+      origin/<branch>; Gerrit does not hold the caller's commits, so a SHA
+      is ignored there.
     required: false
     default: ${{ github.sha }}
   token:
@@ -47,9 +53,25 @@ inputs:
   gerrit-url:
     description: |
       The base URL for the gerrit server. This is used if ref can't be found in
-      the GitHub repository
+      the GitHub repository, or if the GitHub repository does not exist.
+      Credentials embedded in the URL authenticate requests to Gerrit but
+      are never written to .git/config
     required: false
     default: ""
+  on-unavailable:
+    description: >
+      What to do when the GitHub repository does not exist and Gerrit
+      answers HTTP 401 to an anonymous request, meaning the project is
+      closed to this runner: `fail` the step, or `skip` the checkout,
+      leave the workspace untouched and set the `checked-out` output to
+      `false`. Everything else fails whatever this says: HTTP 403 or 404
+      (Gerrit's answer to a hidden project and to a misspelt one alike),
+      a 401 to credentials in gerrit-url, network errors and a missing
+      change.
+
+      Default: fail
+    required: false
+    default: "fail"
   submodules:
     description: >
       Whether to checkout submodules: `true` to checkout submodules or
@@ -58,6 +80,14 @@ inputs:
 
       Default: false
     default: "false"
+
+outputs:
+  checked-out:
+    description: >
+      `true` once the change is checked out, otherwise `false`: when
+      `on-unavailable: skip` skipped it, or when the action failed and
+      the caller set continue-on-error
+    value: ${{ steps.gerrit-checkout.outputs.checked-out || 'false' }}
 
 runs:
   using: "composite"
@@ -157,7 +187,82 @@ runs:
           } >> "$GITHUB_STEP_SUMMARY"
         fi
 
+    # Ask the GitHub API whether the mirror exists before checking it
+    # out. Not every Gerrit project replicates to GitHub, and a missing
+    # mirror otherwise surfaces only after actions/checkout has retried
+    # it three times, as a generic fetch failure. Only a definite 404
+    # sends the action to Gerrit; any other answer, an API outage
+    # included, keeps the mirror path, whose own errors then explain
+    # what went wrong. No request is made without a gerrit-url, where
+    # there is nowhere else to go, nor for the calling repository,
+    # which the workflow is running in and so must exist.
+    - id: probe-mirror
+      shell: bash
+      env:
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_GERRIT_URL: ${{ inputs.gerrit-url }}
+        INPUT_ON_UNAVAILABLE: ${{ inputs.on-unavailable }}
+        CALLER_REPOSITORY: ${{ github.repository }}
+        API_URL: ${{ github.api_url }}
+      run: |
+        # Check whether the GitHub mirror exists
+        set -euo pipefail
+
+        # Validate on-unavailable here, where every run passes, rather
+        # than in the fallback, so a typo fails before a mirror goes
+        # missing rather than after. Trim and case-fold it the way
+        # actions/checkout reads its inputs.
+        on_unavailable=$(printf '%s' "$INPUT_ON_UNAVAILABLE" |
+          tr '[:upper:]' '[:lower:]' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        case "$on_unavailable" in
+          fail | skip) ;;
+          *)
+            shown=${INPUT_ON_UNAVAILABLE//'%'/'%25'}
+            shown=${shown//$'\r'/'%0D'}
+            shown=${shown//$'\n'/'%0A'}
+            echo "::error::Invalid on-unavailable input: '$shown' (expected fail or skip)"
+            exit 1
+            ;;
+        esac
+        echo "on-unavailable=$on_unavailable" >> "$GITHUB_OUTPUT"
+
+        mirror=present
+        # The name goes into a URL and the log, so accept only the
+        # owner/name shape; actions/checkout rejects anything else. A
+        # '.' or '..' segment would let curl resolve the path to some
+        # other endpoint, whose 404 would then read as a missing mirror.
+        if [ -n "$INPUT_GERRIT_URL" ] &&
+           [ "$INPUT_REPOSITORY" != "$CALLER_REPOSITORY" ] &&
+           [[ "$INPUT_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] &&
+           [[ ! "$INPUT_REPOSITORY" =~ (^|/)\.\.?(/|$) ]]
+        then
+          # The token reaches curl on stdin, as configuration, which
+          # keeps it out of the process list. A private mirror the
+          # token cannot see also answers 404, and Gerrit then serves
+          # the change instead. Every caller pays for this request, so
+          # bound it tightly: one retry, ten seconds.
+          status=$(
+            if [ -n "$INPUT_TOKEN" ]
+            then
+              printf 'header = "Authorization: Bearer %s"\n' "$INPUT_TOKEN"
+            fi |
+              curl --config - --silent --output /dev/null \
+                --write-out '%{http_code}' --retry 1 --max-time 10 \
+                --header 'Accept: application/vnd.github+json' \
+                -- "$API_URL/repos/$INPUT_REPOSITORY"
+          ) || status=000
+          if [ "$status" = 404 ]
+          then
+            mirror=absent
+            echo "GitHub repository $INPUT_REPOSITORY not found;" \
+              'checking the change out from Gerrit instead'
+          fi
+        fi
+        echo "mirror=$mirror" >> "$GITHUB_OUTPUT"
+
     - id: delay-checkout
+      if: steps.probe-mirror.outputs.mirror != 'absent'
       shell: bash
       env:
         INPUT_DELAY: ${{ inputs.delay }}
@@ -166,7 +271,8 @@ runs:
     # 'git fetch origin' step below can reach the (possibly private)
     # repository; the token is configured into git by this checkout and the
     # action uploads no artifacts that could leak the credential.
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - if: steps.probe-mirror.outputs.mirror != 'absent'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: ${{ inputs.fetch-depth }}
         repository: ${{ inputs.repository }}
@@ -174,6 +280,18 @@ runs:
         token: ${{ inputs.token }}
         submodules: ${{ inputs.submodules }}
         persist-credentials: true # zizmor: ignore[artipacked]
+
+    # Fetch the change and check it out. Where the mirror exists,
+    # actions/checkout above cloned it, and the change comes from the
+    # mirror, or from gerrit-url while replication catches up.
+    #
+    # Where it does not, the step first asks Gerrit for the project and
+    # the change, and decides before it touches the workspace: when
+    # Gerrit will not serve the change, the workspace stays exactly as
+    # the step found it, holding whatever earlier steps put there. Only
+    # then does it set the workspace up with Gerrit as origin, in place
+    # of the clone actions/checkout would have made, and fetch what that
+    # clone would have held.
     - id: gerrit-checkout
       shell: bash --noprofile --norc {0}
       env:
@@ -182,14 +300,29 @@ runs:
         INPUT_GERRIT_PROJECT: ${{ inputs.gerrit-project }}
         INPUT_FETCH_DEPTH: ${{ inputs.fetch-depth }}
         INPUT_SUBMODULES: ${{ inputs.submodules }}
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        MIRROR: ${{ steps.probe-mirror.outputs.mirror }}
+        ON_UNAVAILABLE: ${{ steps.probe-mirror.outputs.on-unavailable }}
+        SERVER_URL: ${{ github.server_url }}
       # yamllint disable rule:line-length
       run: |
-        set -x
+        # Fold CR and LF into visible escapes, so a value reaching the
+        # log cannot start a line the runner reads as a command.
+        show()
+        {
+          local value=$1
+          value=${value//$'\r'/'\r'}
+          printf '%s' "${value//$'\n'/'\n'}"
+        }
 
         report_error_and_exit()
         {
-          default="fatal: couldn't find remote ref $INPUT_GERRIT_REFSPEC"
-          message=${1:-$default}
+          # Silence xtrace first: tracing the redaction below would print
+          # the message it is about to redact.
+          { set +x; } 2> /dev/null
+          local message=${1:-"fatal: couldn't find remote ref $INPUT_GERRIT_REFSPEC"}
+          local annotation
           # Redact any embedded URL credentials (user:pass@host) before
           # logging so a gerrit-url carrying userinfo cannot leak via the
           # echoed message or the GitHub error annotation.
@@ -205,6 +338,204 @@ runs:
           echo "::error::$annotation"
           exit 1
         }
+
+        ### Gerrit fallback: no mirror, so Gerrit serves the change ###
+        #
+        # Runs before xtrace starts: the credentials it handles stay out
+        # of the trace.
+        if [ "$MIRROR" = absent ]
+        then
+          # Both values reach curl's configuration on stdin, where a CR
+          # or LF would end the line and start a new option, and git's
+          # command line. Neither has any use for a control character,
+          # so refuse them outright rather than escape them.
+          if [[ "$INPUT_GERRIT_URL$INPUT_GERRIT_PROJECT" == *[[:cntrl:]]* ]]
+          then
+            report_error_and_exit 'gerrit-url and gerrit-project must not contain control characters'
+          fi
+          project_path=${INPUT_GERRIT_PROJECT#/}
+          project=$(show "$project_path")
+          refspec=$(show "$INPUT_GERRIT_REFSPEC")
+          gerrit_base=${INPUT_GERRIT_URL%/}
+
+          # Keep credentials embedded in gerrit-url out of .git/config,
+          # where they would outlive this step for any later one to
+          # read: origin stores the URL without them, and git gets them
+          # back through this step's environment, as a rewrite of the
+          # plain URL.
+          #
+          # actions/checkout never ran, so none of what it gives
+          # submodules hosted on GitHub is in place either: the token,
+          # as an HTTP header scoped to the server, and a rewrite of SSH
+          # URLs to HTTPS, so a runner with no SSH key can clone them.
+          # Supply both the same way. git keeps these variables for the
+          # submodule commands it runs, and Gerrit never sees the token.
+          plain_base=$(printf '%s' "$gerrit_base" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]*@#\1#')
+          count=${GIT_CONFIG_COUNT:-0}
+          add_config()
+          {
+            export "GIT_CONFIG_KEY_$count=$1" "GIT_CONFIG_VALUE_$count=$2"
+            count=$((count + 1))
+          }
+          if [ "$plain_base" != "$gerrit_base" ]
+          then
+            add_config "url.$gerrit_base/.insteadOf" "$plain_base/"
+          fi
+          if [ -n "$SERVER_URL" ]
+          then
+            server=${SERVER_URL%/}
+            host=${server#*://}
+            add_config "url.$server/.insteadOf" "git@$host:"
+            add_config "url.$server/.insteadOf" "ssh://git@$host/"
+            if [ -n "$INPUT_TOKEN" ]
+            then
+              basic=$(printf 'x-access-token:%s' "$INPUT_TOKEN" | base64 | tr -d '\n')
+              echo "::add-mask::$basic"
+              add_config "http.$server/.extraheader" "AUTHORIZATION: basic $basic"
+            fi
+          fi
+          export GIT_CONFIG_COUNT=$count
+          export GIT_TERMINAL_PROMPT=0
+
+          # Ask Gerrit over HTTP(S) for the project's advertisement and
+          # judge the status code, rather than the wording of a git or
+          # libcurl error, which varies across versions and locales.
+          # Only an anonymous 401 means a project that exists but is
+          # closed to this runner, so only that may skip. Gerrit answers
+          # 403 or 404 for a hidden project and for a misspelt one
+          # alike, and a 401 to supplied credentials means they are
+          # wrong: all three fail, since skipping would pass a check on
+          # a configuration error. The URL, credentials included,
+          # reaches curl on stdin, which keeps it out of the process
+          # list, and --anyauth lets curl answer whatever scheme Gerrit
+          # asks for, Digest included, as git does. Other schemes have
+          # no status to read, so the ls-remote below decides, and any
+          # failure fails.
+          available=true
+          case "$plain_base" in
+            http://* | https://*)
+              url="$gerrit_base/$project_path/info/refs?service=git-upload-pack"
+              url=${url//\\/\\\\}
+              url=${url//\"/\\\"}
+              curl_error=$(mktemp)
+              status=$(printf 'url = "%s"\n' "$url" |
+                curl --config - --silent --show-error --location --anyauth \
+                  --output /dev/null --write-out '%{http_code}' \
+                  --max-time 30 2> "$curl_error")
+              curl_status=$?
+              curl_message=$(cat "$curl_error")
+              rm -f "$curl_error"
+              # Without --fail, curl exits 0 on any HTTP status, so a
+              # nonzero exit means the transfer itself broke, perhaps
+              # after a status line arrived. Judge no status from it:
+              # a 401 whose body never finished is a network error.
+              if [ "$curl_status" -ne 0 ]
+              then
+                report_error_and_exit "Unable to reach Gerrit for project $project: $curl_message"
+              fi
+              case "$status" in
+                2??) ;;
+                401)
+                  if [ "$plain_base" != "$gerrit_base" ]
+                  then
+                    report_error_and_exit "Gerrit rejected the credentials in gerrit-url for project $project (HTTP 401)"
+                  fi
+                  available=false
+                  ;;
+                403 | 404)
+                  report_error_and_exit "Gerrit project $project not found, or hidden from this runner (HTTP $status): check gerrit-project and gerrit-url"
+                  ;;
+                *)
+                  report_error_and_exit "Gerrit answered HTTP $status for project $project"
+                  ;;
+              esac
+              ;;
+          esac
+
+          if [ "$available" = false ]
+          then
+            message="Gerrit project $project has no GitHub mirror and is closed to anonymous reads (HTTP 401), so $refspec cannot be checked out"
+            if [ "$ON_UNAVAILABLE" != skip ]
+            then
+              report_error_and_exit "$message"
+            fi
+            echo "::notice title=Gerrit change not checked out::${message//'%'/'%25'}; skipped (on-unavailable: skip)"
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]
+            then
+              {
+                echo '### Gerrit change not checked out'
+                echo
+                echo "Gerrit project \`$project\` has no GitHub mirror and" \
+                  'is closed to anonymous reads, so the checkout was' \
+                  "skipped (\`on-unavailable: skip\`)."
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "checked-out=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ls-remote takes the source side of the refspec as its
+          # pattern; --exit-code returns 2 when the project lacks it.
+          pattern=${INPUT_GERRIT_REFSPEC#+}
+          pattern=${pattern%%:*}
+          error=$(git ls-remote --exit-code -- "$plain_base/$project_path" "$pattern" 2>&1 > /dev/null)
+          case $? in
+            0) ;;
+            2) report_error_and_exit "Gerrit project $project has no $refspec" ;;
+            *) report_error_and_exit "$error" ;;
+          esac
+
+          # Gerrit serves the change, so the workspace can now become
+          # the checkout. Start from an empty one, as actions/checkout
+          # does when the one it finds holds anything other than the
+          # repository requested. actions/checkout also marks the
+          # workspace as a safe directory, without which git refuses a
+          # repository owned by another user, as in a container job; do
+          # the same, by the physical path git compares against, unless
+          # the configuration already trusts it or every directory.
+          workspace=$(pwd -P)
+          if ! git config --global --get-all safe.directory 2> /dev/null |
+               grep -Fx -e "$workspace" -e '*' > /dev/null
+          then
+            if ! git config --global --add safe.directory "$workspace"
+            then
+              report_error_and_exit "Unable to mark $(show "$workspace") as a safe directory"
+            fi
+          fi
+          if ! find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {} + ||
+             ! git init -q ||
+             ! git remote add origin "$plain_base/$project_path"
+          then
+            report_error_and_exit "Unable to prepare a workspace for Gerrit project $project"
+          fi
+
+          # Fetch the base the mirror clone would have held, before the
+          # change: actions/checkout fetches every branch and tag for
+          # fetch-depth 0, and otherwise the branch 'ref' names, as
+          # origin/<branch>. A 'ref' naming no branch (by default, the
+          # caller's commit, which Gerrit does not hold) leaves only the
+          # change, fetched below.
+          fetch=()
+          if [ "$INPUT_FETCH_DEPTH" = 0 ]
+          then
+            fetch=(--tags -- origin '+refs/heads/*:refs/remotes/origin/*')
+          else
+            case "$INPUT_REF" in
+              refs/heads/?*)
+                branch=${INPUT_REF#refs/heads/}
+                fetch=("--depth=$INPUT_FETCH_DEPTH" -- origin
+                  "+refs/heads/$branch:refs/remotes/origin/$branch")
+                ;;
+            esac
+          fi
+          if [ ${#fetch[@]} -gt 0 ] &&
+             ! error=$(git fetch -q --no-recurse-submodules "${fetch[@]}" 2>&1 > /dev/null)
+          then
+            report_error_and_exit "$error"
+          fi
+        fi
+
+        set -x
 
         fetch_from_gerrit()
         {
@@ -328,8 +659,13 @@ runs:
         # the refspec fetch so the parent stays reachable for consumers
         # that diff against HEAD~1. Guarded by --is-shallow-repository
         # so a full clone (fetch-depth: 0) is never silently truncated.
+        # A repository with no commits yet, which is what the Gerrit
+        # fallback prepares, is not shallow either, so it takes the
+        # requested depth too, unless that depth asks for everything.
         depth_args=()
-        if [ "$(git rev-parse --is-shallow-repository)" = "true" ]
+        if [ "$(git rev-parse --is-shallow-repository)" = "true" ] ||
+           { ! git rev-parse -q --verify HEAD > /dev/null &&
+             [ "$INPUT_FETCH_DEPTH" != 0 ]; }
         then
           depth_args=("--depth=$INPUT_FETCH_DEPTH")
         fi
@@ -349,6 +685,12 @@ runs:
         exit_code=$?
         if [ $exit_code -ne 0 ]
         then
+          # On the fallback origin already is Gerrit, with nowhere else
+          # to try
+          if [ "$MIRROR" = absent ]
+          then
+            report_error_and_exit "$error"
+          fi
           fetch_from_gerrit "$error"
         fi
         set -x
@@ -390,3 +732,4 @@ runs:
             report_error_and_exit "Unable to update nested submodules for $INPUT_GERRIT_REFSPEC"
           fi
         fi
+        echo "checked-out=true" >> "$GITHUB_OUTPUT"

@@ -56,3 +56,10 @@ jobs:
       - name: 'Check submodules follow the Gerrit change'
         shell: bash
         run: ./tests/submodule-refresh.sh
+
+      # Runs the probe-mirror, gerrit-fallback and gerrit-checkout
+      # steps against a stub server on the loopback interface and local
+      # repositories, so it too needs neither egress nor credentials.
+      - name: 'Check the checkout falls back to Gerrit'
+        shell: bash
+        run: ./tests/gerrit-fallback.sh
