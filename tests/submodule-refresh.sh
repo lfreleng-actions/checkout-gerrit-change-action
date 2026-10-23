@@ -383,9 +383,12 @@ for m in "${!MODES[@]}"; do
     echo "### submodules: $mode, change: $change"
 
     rc=0
+    # The runner always provides an output file, created before the step
+    : > "$WORK/output-$m-$c"
     (
       cd "$ws"
-      INPUT_GERRIT_REFSPEC="${REFSPECS[c]}" \
+      GITHUB_OUTPUT="$WORK/output-$m-$c" \
+        INPUT_GERRIT_REFSPEC="${REFSPECS[c]}" \
         INPUT_GERRIT_URL="$gerrit_url" \
         INPUT_GERRIT_PROJECT="$GERRIT_PROJECT" \
         INPUT_FETCH_DEPTH="$FETCH_DEPTH" \
@@ -395,8 +398,10 @@ for m in "${!MODES[@]}"; do
     failed_before=$failed
 
     want_error="$(expected_error "$mode" "$kind" "${REFSPECS[c]}")"
+    checked_out="$(sed -n 's/^checked-out=//p' "$WORK/output-$m-$c")"
     if [ -z "$want_error" ]; then
       check "$tag: step succeeds" "$rc" 0
+      check "$tag: checked-out output is true" "$checked_out" 'true'
     else
       # The step's shell has no -e: only the explicit report stops it
       # passing on a stale tree, so require both the failure and the
@@ -409,6 +414,7 @@ for m in "${!MODES[@]}"; do
       check "$tag: step fails" "$outcome" 'failed'
       check "$tag: step reports the failed refresh" \
         "$(grep '^::error::' "$log" || true)" "$want_error"
+      check "$tag: checked-out output is not set" "$checked_out" ''
     fi
     # Where the checkout itself must fail, HEAD stays at the branch tip
     if [ "$(lower "$mode"):$kind" = false:replace-populated ]; then
