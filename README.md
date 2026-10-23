@@ -5,7 +5,8 @@ SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 # Gerrit Change Checkout Action
 
-Checkout a mirrored Gerrit change.
+Checkout a Gerrit change, from its GitHub mirror or, when the project has
+no mirror, directly from Gerrit.
 
 ## checkout-gerrit-change-action
 
@@ -15,17 +16,28 @@ Checkout a mirrored Gerrit change.
 
 <!-- markdownlint-disable MD013 -->
 
-| Name           | Required | Default                  | Description                                                                                                                                                |
-| -------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| gerrit-refspec | True     | N/A                      | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z                                                                                              |
-| gerrit-project | True     | N/A                      | The project in Gerrit                                                                                                                                      |
-| delay          | False    | 10s                      | Delay in seconds to wait to make sure replication has finished                                                                                             |
-| fetch-depth    | False    | 2                        | Number of commits to fetch. 0 indicates all history for all branches and tags                                                                              |
-| repository     | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout. Inside a reusable workflow the default names the caller; see [Checkout target](#checkout-target) |
-| ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event               |
-| token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                                   |
-| gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository                                                                       |
-| submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules. See [Submodules](#submodules)             |
+| Name           | Required | Default                  | Description                                                                                                                                                                         |
+| -------------- | -------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| gerrit-refspec | True     | N/A                      | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z                                                                                                                       |
+| gerrit-project | True     | N/A                      | The project in Gerrit                                                                                                                                                               |
+| delay          | False    | 10s                      | Delay in seconds to wait to make sure replication has finished                                                                                                                      |
+| fetch-depth    | False    | 2                        | Number of commits to fetch. 0 indicates all history for all branches and tags                                                                                                       |
+| repository     | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout. Inside a reusable workflow the default names the caller; see [Checkout target](#checkout-target)                          |
+| ref            | False    | ${{ github.sha }}        | The branch, tag or SHA to checkout. When checking out the repository that triggered a workflow, defaults to the reference/SHA for that event                                        |
+| token          | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                                                            |
+| gerrit-url     | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository, or the repository does not exist. See [Projects without a mirror](#projects-without-a-mirror) |
+| on-unavailable | False    | fail                     | With no mirror and no anonymous access to the Gerrit project: `fail`, or `skip` the checkout. See [Projects without a mirror](#projects-without-a-mirror)                           |
+| submodules     | False    | false                    | Whether to checkout submodules: `true` to checkout submodules or `recursive` to recursively checkout submodules. See [Submodules](#submodules)                                      |
+
+<!-- markdownlint-enable MD013 -->
+
+## Outputs
+
+<!-- markdownlint-disable MD013 -->
+
+| Name        | Description                                                                                  |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| checked-out | `true` once the action checks out the change; `false` when `on-unavailable: skip` skipped it |
 
 <!-- markdownlint-enable MD013 -->
 
@@ -52,6 +64,67 @@ branch names happen to match, the checkout succeeds against the wrong code.
 
 When the checkout repository disagrees with `gerrit-project`, this action
 writes a warning to the log and the job summary before it checks anything out.
+
+## Projects without a mirror
+
+Not every Gerrit project replicates to GitHub. Before checking anything
+out, the action asks the GitHub API whether `repository` exists. When the
+API answers 404 and the caller supplies `gerrit-url`, the action skips the
+mirror and checks the change out from `gerrit-url`/`gerrit-project`
+instead. The workspace matches what the mirror path would leave:
+
+- `fetch-depth: 0` fetches every branch and tag, as `origin/<branch>`
+  and `refs/tags/*`, then the change with its full history.
+- Otherwise, a `ref` naming a branch (`refs/heads/<branch>`) fetches
+  that branch as `origin/<branch>` at `fetch-depth`, then the change at
+  the same depth. A `ref` naming a commit, such as the `github.sha`
+  default, fetches the change alone, since Gerrit does not hold the
+  caller's commits.
+- `submodules` behaves as before, and the action marks the workspace
+  as a git `safe.directory`, as `actions/checkout` does. For submodules
+  hosted on GitHub it supplies what `actions/checkout` would: SSH URLs
+  rewritten to HTTPS, and `token` as a header scoped to the GitHub
+  server. Both live in the step's environment alone, so neither
+  reaches `.git/config` nor outlives the step, and Gerrit never sees
+  the token.
+- Credentials embedded in `gerrit-url` (`https://user:pass@host/`)
+  authenticate the Gerrit fetches but stay out of `.git/config`:
+  `origin` holds the URL without them.
+
+The `delay` for replication does not apply. Any other answer from the
+API, an outage included, keeps the mirror path.
+
+A hosted runner reaches Gerrit without credentials. When Gerrit refuses
+anonymous access to the project (HTTP 401, 403 or 404), because the
+project restricts reads or does not exist, `on-unavailable` decides the
+outcome:
+
+- `fail` (the default) fails the step, naming the project.
+- `skip` leaves the workspace empty, sets the `checked-out` output to
+  `false`, and explains the skip in a notice and the job summary.
+
+A network error, or a change the project does not hold, fails the step
+whatever `on-unavailable` says: neither is a reason to pass a check.
+
+With `skip`, gate the steps that need the tree on the output:
+
+```yaml
+- id: checkout
+  uses: lfreleng-actions/checkout-gerrit-change-action@<sha>
+  with:
+      gerrit-refspec: ${{ inputs.gerrit_refspec }}
+      gerrit-project: ${{ inputs.gerrit_project }}
+      gerrit-url: ${{ vars.GERRIT_URL }}
+      repository: ${{ inputs.repository }}
+      ref: refs/heads/${{ inputs.gerrit_branch }}
+      on-unavailable: skip
+- name: Run the checks
+  if: steps.checkout.outputs.checked-out == 'true'
+  run: make verify
+```
+
+A private mirror that `token` cannot see also answers 404, so the action
+fetches from Gerrit in that case too.
 
 ## Parent commit guarantee
 
@@ -135,8 +208,15 @@ rather than leaving the submodule empty.
       token: ${{ github.token }}
 
       # The base URL for the gerrit server. Used if the ref can't be
-      # found in the GitHub repository
+      # found in the GitHub repository, or the repository does not exist
       gerrit-url: ${{ vars.GERRIT_URL }}
+
+      # With no GitHub mirror and no anonymous access to the Gerrit
+      # project: `fail`, or `skip` the checkout and set the
+      # `checked-out` output to `false`
+      #
+      # Default: fail
+      on-unavailable: "fail"
 
       # Whether to checkout submodules: `true` to checkout submodules or
       # `recursive` to recursively checkout submodules.
