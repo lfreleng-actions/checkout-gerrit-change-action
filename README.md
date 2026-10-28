@@ -258,3 +258,22 @@ rather than leaving the submodule empty.
       # Default: false
       submodules: "false"
 ```
+
+## Development
+
+The logic of each step lives in `scripts/`. The first step copies the
+scripts to `RUNNER_TEMP`, because a caller running the action from its
+own checkout (`uses: ./`) has it inside the workspace, which
+`actions/checkout` clears. Each later step sources its script from that
+copy, in the step's own shell, so each script keeps the options the
+runner gives that step. The test suites read each step's `shell:` and
+`run:` from `action.yaml` and run them as the runner would, against
+local repositories and a loopback stub server, so they need no network
+access:
+
+```sh
+bash tests/submodule-refresh.sh
+bash tests/gerrit-fallback.sh
+```
+
+They need `git`, with `git http-backend`, and `python3`.
