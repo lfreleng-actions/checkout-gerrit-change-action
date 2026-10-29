@@ -11,17 +11,16 @@
 # can skip their checks rather than vote on a tree that is not the
 # change. Anything else Gerrit refuses fails either way.
 #
-# Each step comes out of action.yaml, its 'shell:' included, and runs
-# the way the runner runs it, as in submodule-refresh.sh. It needs git,
-# ruby (for the YAML parser) and python3, for a server on the loopback
-# interface standing in for the GitHub API and for Gerrit: it serves
-# repositories over smart HTTP through 'git http-backend', with and
-# without a password, and answers 401, 403 and 404 the way Gerrit does.
+# Each step runs as the runner runs it, read out of action.yaml with its
+# 'shell:', as in submodule-refresh.sh. It needs git and python3, for a
+# server on the loopback interface standing in for the GitHub API and
+# for Gerrit: it serves repositories over smart HTTP through
+# 'git http-backend', with and without a password, and answers 401,
+# 403 and 404 the way Gerrit does.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-ACTION="${REPO_ROOT}/action.yaml"
 WORK="$(mktemp -d)"
 SERVER_PID=''
 cleanup() {
@@ -50,39 +49,14 @@ git config --global protocol.file.allow always
 
 ### The steps under test ###
 
-# Write step $1's script to $WORK/$1.sh and its command line, with the
-# script in place of '{0}', to $WORK/$1.cmd, one word per line. The
-# runner expands the 'bash' keyword to the command below; see
-# src/Runner.Worker/Handlers/ScriptHandlerHelpers.cs in actions/runner.
-extract() {
-  local id="$1" shell
-  ruby -ryaml -e '
-    steps = YAML.safe_load(File.read(ARGV[0])).dig("runs", "steps")
-    step = steps.find { |s| s["id"] == ARGV[1] }
-    abort "No step with id #{ARGV[1]} in #{ARGV[0]}" unless step
-    File.write(ARGV[2], step.fetch("run"))
-    File.write(ARGV[3], step.fetch("shell", "bash"))
-  ' "$ACTION" "$id" "$WORK/$id.sh" "$WORK/$id.shell"
-  shell="$(cat "$WORK/$id.shell")"
-  case "$shell" in
-    bash) shell='bash --noprofile --norc -e -o pipefail {0}' ;;
-    *'{0}'*) ;;
-    *)
-      echo "Unsupported shell for $id: $shell" >&2
-      exit 1
-      ;;
-  esac
-  read -ra words <<< "$shell"
-  for i in "${!words[@]}"; do
-    if [ "${words[i]}" = '{0}' ]; then
-      words[i]="$WORK/$id.sh"
-    fi
-  done
-  printf '%s\n' "${words[@]}" > "$WORK/$id.cmd"
-}
+# shellcheck source=tests/steps.sh
+source "$REPO_ROOT/tests/steps.sh"
+stage_scripts
 
+# Write each step's command line to $WORK/<id>.cmd, one word per line
 for id in probe-mirror gerrit-checkout; do
-  extract "$id"
+  step_command "$id"
+  printf '%s\n' "${STEP_CMD[@]}" > "$WORK/$id.cmd"
 done
 
 # Run step $1 in directory $2 with the environment that follows, the
@@ -511,6 +485,23 @@ check 'ref naming a commit: parent reachable for HEAD~1' \
 
 REF=refs/heads/no-such-branch checkout "$GERRIT_URL" "$PROJECT" "$REFSPEC" fail
 check 'ref naming a missing branch: step fails' "$(outcome)" 'failed'
+
+# Run from the caller's own checkout (uses: ./), the action lives in the
+# workspace, which actions/checkout clears before gerrit-checkout runs.
+# The steps must source the copies stage-scripts made, not the originals.
+mkdir -p "$WORK/local-action"
+cp -R "$REPO_ROOT/action.yaml" "$REPO_ROOT/scripts" "$WORK/local-action/"
+staged_from_repo="$SCRIPTS_DIR"
+REPO_ROOT="$WORK/local-action" stage_scripts
+check 'local action: scripts staged outside the action' \
+  "$(case "$SCRIPTS_DIR" in "$WORK/local-action"*) echo inside ;; *) echo outside ;; esac)" \
+  'outside'
+rm -rf "$WORK/local-action"
+checkout "$GERRIT_URL" "$PROJECT" "$REFSPEC" fail
+check 'local action removed before the checkout: step succeeds' "$(outcome)" 'succeeded'
+check 'local action removed before the checkout: HEAD is the change' \
+  "$(git -C "$WORK/ws" rev-parse HEAD 2> /dev/null)" "$CHANGE"
+export SCRIPTS_DIR="$staged_from_repo"
 
 checkout "$GERRIT_URL/" "/$PROJECT" "$REFSPEC" fail
 check 'slashes around gerrit-url and project: step succeeds' "$(outcome)" 'succeeded'

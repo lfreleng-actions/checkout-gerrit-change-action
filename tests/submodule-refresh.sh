@@ -8,15 +8,13 @@
 # drops. Getting this wrong fails nothing: a scanner reads the stale
 # submodule content and passes.
 #
-# The step comes out of action.yaml, its 'shell:' included, and runs the
-# way the runner runs it, so the suite cannot drift from what the action
-# executes. It needs git and ruby (for the YAML parser in its standard
-# library) but no network: every remote is a local bare repository.
+# The step runs as the runner runs it, read out of action.yaml with its
+# 'shell:', so the suite cannot drift from what the action executes. It
+# needs git but no network: every remote is a local bare repository.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-ACTION="${REPO_ROOT}/action.yaml"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -41,34 +39,12 @@ git config --global protocol.file.allow always
 
 ### The step under test ###
 
-ruby -ryaml -e '
-  steps = YAML.safe_load(File.read(ARGV[0])).dig("runs", "steps")
-  step = steps.find { |s| s["id"] == "gerrit-checkout" }
-  abort "No step with id gerrit-checkout in #{ARGV[0]}" unless step
-  File.write(ARGV[1], step.fetch("run"))
-  File.write(ARGV[2], step.fetch("shell", "bash"))
-' "$ACTION" "$WORK/step.sh" "$WORK/step.shell"
-
-# The runner expands the 'bash' keyword to the command below, and puts
-# the script path in place of '{0}' in a custom shell like this step's;
-# see src/Runner.Worker/Handlers/ScriptHandlerHelpers.cs in
-# actions/runner. The options matter: this step's shell carries no -e,
-# so a failure only reaches the job if the script reports it.
-shell="$(cat "$WORK/step.shell")"
-case "$shell" in
-  bash) shell='bash --noprofile --norc -e -o pipefail {0}' ;;
-  *'{0}'*) ;;
-  *)
-    echo "Unsupported shell for gerrit-checkout: $shell" >&2
-    exit 1
-    ;;
-esac
-read -ra STEP_CMD <<< "$shell"
-for i in "${!STEP_CMD[@]}"; do
-  if [ "${STEP_CMD[i]}" = '{0}' ]; then
-    STEP_CMD[i]="$WORK/step.sh"
-  fi
-done
+# shellcheck source=tests/steps.sh
+source "$REPO_ROOT/tests/steps.sh"
+stage_scripts
+# This step's shell carries no -e, so a failure only reaches the job
+# if the script reports it.
+step_command gerrit-checkout
 
 ### Fixtures ###
 

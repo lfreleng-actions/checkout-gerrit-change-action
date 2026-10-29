@@ -50,16 +50,18 @@ jobs:
         with:
           persist-credentials: false
 
-      # Runs the gerrit-checkout step out of action.yaml against local
-      # repositories, so it needs neither network access nor
-      # credentials, and runs on pull requests from forks.
+      # Runs the gerrit-checkout step, as action.yaml defines it, against
+      # local repositories, so it needs neither network access nor
+      # credentials, and runs on pull requests from forks. The suites
+      # carry no executable bit, which the code monkey bot cannot set or
+      # keep when it edits a file, so they run through bash.
       - name: 'Check submodules follow the Gerrit change'
         shell: bash
-        run: ./tests/submodule-refresh.sh
+        run: bash tests/submodule-refresh.sh
 
-      # Runs the probe-mirror, gerrit-fallback and gerrit-checkout
-      # steps against a stub server on the loopback interface and local
-      # repositories, so it too needs neither egress nor credentials.
+      # Runs the probe-mirror and gerrit-checkout steps against a stub
+      # server on the loopback interface and local repositories, so it
+      # too needs neither egress nor credentials.
       - name: 'Check the checkout falls back to Gerrit'
         shell: bash
-        run: ./tests/gerrit-fallback.sh
+        run: bash tests/gerrit-fallback.sh
