@@ -183,3 +183,25 @@ runs:
         ON_UNAVAILABLE: ${{ steps.probe-mirror.outputs.on-unavailable }}
         SERVER_URL: ${{ github.server_url }}
       run: source "$SCRIPTS_DIR/gerrit-checkout.sh"
+
+    # Once the action has failed on the mirror path, say what state the
+    # mirror is in and who can fix it: missing, archived, empty, without
+    # the branch, or without the change. git's own error names only a
+    # ref, and those causes all produce the same one. The step never
+    # runs on success, so a passing run makes no extra request, and it
+    # never changes the outcome. It says nothing when the mirror looks
+    # healthy, since the failure then lies elsewhere.
+    - id: diagnose-mirror
+      if: failure() && steps.probe-mirror.outputs.mirror != 'absent'
+      shell: bash
+      env:
+        SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        INPUT_REF: ${{ inputs.ref }}
+        INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
+        INPUT_GERRIT_URL: ${{ inputs.gerrit-url }}
+        INPUT_DELAY: ${{ inputs.delay }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        API_URL: ${{ github.api_url }}
+        SERVER_URL: ${{ github.server_url }}
+      run: source "$SCRIPTS_DIR/diagnose-mirror.sh"
