@@ -65,3 +65,11 @@ jobs:
       - name: 'Check the checkout falls back to Gerrit'
         shell: bash
         run: bash tests/gerrit-fallback.sh
+
+      # Runs the diagnose-mirror step against a stub GitHub API and
+      # mirrors served from local repositories over the loopback
+      # interface: every mirror state, hostile API answers, timeouts
+      # and the token's handling, with no egress or credentials.
+      - name: 'Check the mirror diagnosis after a failure'
+        shell: bash
+        run: bash tests/mirror-diagnosis.sh
