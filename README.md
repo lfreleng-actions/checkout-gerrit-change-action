@@ -159,6 +159,60 @@ fetches from Gerrit in that case too.
   that leaves one entry per workspace path.
 - Callers gain the fallback when they move their pin to a release
   carrying it, and must set `on-unavailable: skip` to skip.
+- Gerrit does not replicate private change refs, so a mirror never
+  holds a private change and the mirror path cannot check one out. See
+  [When the mirror is the problem](#when-the-mirror-is-the-problem).
+
+## When the mirror is the problem
+
+git reports a change or branch the mirror lacks as `couldn't find remote
+ref`, whatever the reason. Once the action has failed on the mirror
+path, a last step reads the state of the mirror, through the GitHub API
+and `git ls-remote`, and explains it in one annotation and one line of
+the job summary:
+
+<!-- markdownlint-disable MD013 -->
+
+| State                                         | Message                                                                                                                  | Who acts                                                                              |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| Not found, or not visible, with no gerrit-url | The repository was not found, or is private and not visible to `token`, and with no `gerrit-url` Gerrit cannot serve it  | The caller: set `gerrit-url`, check `repository`, or pass a `token` that can read it  |
+| Archived                                      | Replication cannot update an archived mirror, so the change will never arrive                                            | LF Releng or the project's administrators                                             |
+| Empty                                         | The mirror has no branches: replication has not populated it                                                             | LF Releng: replication, and the project's read grant for the GitHub Replication group |
+| Branch missing                                | The mirror has no branch, or for a bare name no tag either, named by `ref`                                               | The caller, through `ref`; or the project, for a new branch                           |
+| Change ref missing                            | The mirror has branches but not the change: replication may lag behind `delay` or have stalled, or the change is private | Retry; if it persists, LF Releng. Nothing replicates a private change                 |
+| Cannot tell                                   | The step could not read the state, and names the HTTP status, the failed command, or the unread archive state            | Nobody: the step claims no cause without evidence                                     |
+
+<!-- markdownlint-enable MD013 -->
+
+With `gerrit-url` set, the probe sends a missing mirror to Gerrit. The
+step reports one there when the probe could not tell, or when
+`repository` names the calling repository, and asks the caller to check
+`repository` and `token`.
+
+Gerrit does not replicate private change refs, so a private change never
+reaches the mirror, whatever the `delay`.
+
+A mirror that is empty or archived is not the fault of the change or of
+the workflow calling the action. The step:
+
+- runs after a failure and never otherwise, so a successful run makes
+  no extra request;
+- does not run where the change came from Gerrit because the mirror
+  does not exist, since that path explains its own failures;
+- says nothing when the mirror looks healthy, populated and holding the
+  change, since the failure then lies elsewhere; when the GitHub API's
+  answer leaves the archive state unreadable, anything but a body
+  holding one JSON object whose `archived` is `true` or `false`, it
+  says it cannot tell rather than fall silent;
+- never changes the outcome, and makes one attempt of at most 10 seconds
+  per request, three requests at most; a git command still running then
+  gets TERM, along with its HTTP transport and anything else it started,
+  and any of them still running a second later gets KILL;
+- checks the branch when `ref` names it in letters, digits, `.`, `_`,
+  `-` and `/`, so that the message can show it, and makes no claim
+  about a branch with any other name;
+- builds every message from fixed text and the inputs, never from what
+  the server sends, and keeps `token` off the command line.
 
 ## Parent commit guarantee
 
@@ -274,6 +328,7 @@ access:
 ```sh
 bash tests/submodule-refresh.sh
 bash tests/gerrit-fallback.sh
+bash tests/mirror-diagnosis.sh
 ```
 
 They need `git`, with `git http-backend`, and `python3`.
