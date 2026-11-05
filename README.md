@@ -21,14 +21,14 @@ Gerrit and GitHub-native runs alike; see [Modes](#modes).
 | Name                | Required | Default                  | Description                                                                                                                                                                                    |
 | ------------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | gerrit-refspec      | False    | ""                       | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z. Empty selects plain mode; see [Modes](#modes)                                                                                   |
-| gerrit-project      | False    | ""                       | The project in Gerrit. Gerrit mode requires it; plain mode ignores it                                                                                                                          |
+| gerrit-project      | False    | ""                       | The project in Gerrit. Recommended in Gerrit mode, and required when Gerrit serves the change; see [Modes](#modes). Plain mode ignores it                                                      |
 | gerrit-branch       | False    | ""                       | In Gerrit mode, when set, the action checks out `refs/heads/<gerrit-branch>` before fetching the change, in place of `ref`. Ignored in plain mode                                              |
 | delay               | False    | 10s                      | Delay to wait for replication to the GitHub mirror; not applied in plain mode, nor when the change comes from Gerrit because the project has no mirror                                         |
 | fetch-depth         | False    | 2                        | Number of commits to fetch, in both modes. 0 indicates all history for all branches and tags                                                                                                   |
 | fetch-tags          | False    | false                    | Whether to fetch tags, even when `fetch-depth` > 0. Passed to `actions/checkout`; the [Gerrit fallback](#projects-without-a-mirror) ignores it                                                 |
 | filter              | False    | ""                       | Partially clone against a given filter, eg: `blob:none`. Passed to `actions/checkout`; the [Gerrit fallback](#projects-without-a-mirror) ignores it                                            |
 | repository          | False    | ${{ github.repository }} | Repository name with owner. For example actions/checkout. Inside a reusable workflow the default names the caller; see [Checkout target](#checkout-target)                                     |
-| ref                 | False    | ""                       | The branch, tag or SHA to checkout. Empty: in plain mode, `actions/checkout` chooses; in Gerrit mode, `github.sha`. See [Modes](#modes). With no mirror, a branch applies; a SHA does not      |
+| ref                 | False    | ""                       | The branch, tag or SHA to checkout. Empty: `actions/checkout` chooses, except Gerrit mode uses `github.sha` for the calling repository. See [Modes](#modes). With no mirror, SHAs do not apply |
 | token               | False    | ${{ github.token }}      | Personal Access token (PAT) used to fetch the repository                                                                                                                                       |
 | persist-credentials | False    | true                     | Whether to leave `token` in the local git config. See [Credentials](#credentials)                                                                                                              |
 | gerrit-url          | False    | ""                       | The base URL for the gerrit server; used when ref not found in the GitHub repository, or the repository does not exist. See [Projects without a mirror](#projects-without-a-mirror)            |
@@ -53,8 +53,11 @@ Gerrit and GitHub-native runs alike; see [Modes](#modes).
 The action runs in one of two modes, chosen by `gerrit-refspec`:
 
 - **Gerrit mode**, with `gerrit-refspec` set: the action checks out
-  the change, as the rest of this document describes. It needs
-  `gerrit-project`, and fails naming the input without it.
+  the change, as the rest of this document describes. Pass
+  `gerrit-project` always: a change the mirror serves needs none, but
+  when Gerrit has to serve it, because the project has no mirror or the
+  mirror lacks the change and the action falls back to `gerrit-url`,
+  the action fails naming the input without it.
 - **Plain mode**, with `gerrit-refspec` empty: the action runs
   `actions/checkout` once, checking out `repository` at `ref` with
   `token`, `fetch-depth`, `fetch-tags`, `filter`, `submodules` and
@@ -100,7 +103,16 @@ An empty `ref` behaves as `actions/checkout` does in plain mode: the
 action passes it on empty, and `actions/checkout` checks out the
 triggering commit for the calling repository and the default branch
 for any other. Gerrit mode, with `ref` and `gerrit-branch` both empty,
-uses `github.sha`, as it always has.
+uses `github.sha` when `repository` names the calling repository (in
+any letter case), as it always has. For any other repository it passes
+`ref` on empty, as plain mode does, so `actions/checkout` checks out
+that repository's default branch and the action fetches the change on
+top: an explicit `ref: ''` there behaves as it did in v1.3.0.
+
+One case differs from v1.3.0, which defaulted `ref` to `github.sha`
+whatever the `repository`: a Gerrit-mode call naming another repository
+and omitting `ref` asked that repository for a commit it does not hold,
+and failed. It now succeeds, from the default branch.
 
 ## Credentials
 
@@ -350,7 +362,8 @@ rather than leaving the submodule empty.
       # Default: ""
       gerrit-refspec: "refs/changes/40/11540/1"
 
-      # The project in Gerrit; Gerrit mode requires it
+      # The project in Gerrit; recommended in Gerrit mode, and required
+      # when Gerrit, not the mirror, serves the change
       #
       # Default: ""
       gerrit-project: "releng/builder"
@@ -391,7 +404,8 @@ rather than leaving the submodule empty.
       # The branch, tag or SHA to checkout. Empty, plain mode checks out the
       # reference or SHA for the event when checking out the repository that
       # triggered a workflow, otherwise the default branch; Gerrit mode, with
-      # no gerrit-branch, checks out github.sha.
+      # no gerrit-branch, checks out github.sha for the repository that
+      # triggered the workflow, and behaves as plain mode for any other.
       #
       # Default: ""
       ref: ""

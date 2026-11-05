@@ -48,6 +48,12 @@ report_error_and_exit()
 # of the trace.
 if [ "$MIRROR" = absent ]
 then
+  # Gerrit mode does not require gerrit-project, since a mirror can
+  # serve the change without it. Here Gerrit has to.
+  if [ -z "${INPUT_GERRIT_PROJECT//[[:space:]]/}" ]
+  then
+    report_error_and_exit 'Input gerrit-project is required: the project has no GitHub mirror, so the change must come from Gerrit'
+  fi
   # Both values reach curl's configuration on stdin, where a CR
   # or LF would end the line and start a new option, and git's
   # command line. Neither has any use for a control character,
@@ -245,6 +251,10 @@ fetch_from_gerrit()
   if [ -z "$INPUT_GERRIT_URL" ]
   then
     report_error_and_exit "$1"
+  fi
+  if [ -z "${INPUT_GERRIT_PROJECT//[[:space:]]/}" ]
+  then
+    report_error_and_exit "Input gerrit-project is required: the mirror fetch failed, and falling back to Gerrit needs the project. The mirror fetch reported: $1"
   fi
 
   # Disable xtrace around the fetch and its failure handling so a

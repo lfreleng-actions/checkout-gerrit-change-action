@@ -311,26 +311,55 @@ jobs:
           git config --local --get-regexp '^includeif\.' |
             grep -q 'git-credentials-'
 
-      - name: 'Checkout in Gerrit mode, without gerrit-project'
-        id: no-project
-        continue-on-error: true
+      # The historical call shape, as gerrit_to_platform's own
+      # workflow makes it: no gerrit-project, gerrit-url, ref or
+      # gerrit-branch. The mirror holds the change, so it checks out
+      # as it did in v1.3.0.
+      - name: 'Checkout in Gerrit mode, with gerrit-refspec alone'
+        id: minimal
         uses: ./  # zizmor: ignore[self-repository]
         with:
           gerrit-refspec: ${{ github.sha }}
           delay: '0s'
 
-      - name: 'Verify the missing gerrit-project fails'
+      - name: 'Verify the checkout with gerrit-refspec alone'
         shell: bash
         env:
-          OUTCOME: ${{ steps.no-project.outcome }}
-          CHECKED_OUT: ${{ steps.no-project.outputs.checked-out }}
+          MODE: ${{ steps.minimal.outputs.mode }}
+          CHECKED_OUT: ${{ steps.minimal.outputs.checked-out }}
+          WANT: ${{ github.sha }}
         run: |
           set -x
-          test "$OUTCOME" = failure
-          test "$CHECKED_OUT" = false
+          test "$MODE" = gerrit
+          test "$CHECKED_OUT" = true
+          test "$(git rev-parse HEAD)" = "$WANT"
 
-      # The defaults scenario above left credentials in the clone, so a
-      # removal step that did not run would leave them in place
+      # The lfit/.github required-workflow shape: repository and a
+      # branch ref, still without gerrit-project
+      - name: 'Checkout in Gerrit mode, with repository and ref alone'
+        id: required-workflow
+        uses: ./  # zizmor: ignore[self-repository]
+        with:
+          gerrit-refspec: ${{ github.sha }}
+          delay: '0s'
+          repository: ${{ github.repository }}
+          ref: 'refs/heads/main'
+
+      - name: 'Verify the checkout with repository and ref alone'
+        shell: bash
+        env:
+          MODE: ${{ steps.required-workflow.outputs.mode }}
+          CHECKED_OUT: ${{ steps.required-workflow.outputs.checked-out }}
+          WANT: ${{ github.sha }}
+        run: |
+          set -x
+          test "$MODE" = gerrit
+          test "$CHECKED_OUT" = true
+          test "$(git rev-parse HEAD)" = "$WANT"
+          git rev-parse --verify -q refs/remotes/origin/main
+
+      # The scenarios above left credentials in the clone, so a removal
+      # step that did not run would leave them in place
       - name: 'Confirm credentials are persisted before the failure'
         shell: bash
         run: |

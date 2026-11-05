@@ -49,7 +49,7 @@ git config --global protocol.file.allow always
 
 ### The steps under test ###
 
-# shellcheck source=tests/steps.sh
+# shellcheck source=tests/steps.sh disable=SC1091
 source "$REPO_ROOT/tests/steps.sh"
 stage_scripts
 
@@ -483,6 +483,13 @@ check 'ref naming a commit: HEAD is the change' \
 check 'ref naming a commit: parent reachable for HEAD~1' \
   "$(git -C "$WORK/ws" rev-parse HEAD~1)" "$BASE"
 
+# Gerrit mode passes an empty ref for another repository
+REF='' checkout "$GERRIT_URL" "$PROJECT" "$REFSPEC" fail
+check 'empty ref: step succeeds' "$(outcome)" 'succeeded'
+check 'empty ref: no base fetched' "$(refs)" ''
+check 'empty ref: HEAD is the change' \
+  "$(git -C "$WORK/ws" rev-parse HEAD)" "$CHANGE"
+
 REF=refs/heads/no-such-branch checkout "$GERRIT_URL" "$PROJECT" "$REFSPEC" fail
 check 'ref naming a missing branch: step fails' "$(outcome)" 'failed'
 
@@ -692,6 +699,63 @@ run_step gerrit-checkout "$WORK/ws" \
   INPUT_SUBMODULES=true INPUT_TOKEN='test-token' MIRROR=present \
   SERVER_URL="$STUB/github"
 check 'mirror path: token not added by this step' "$(submodule_auth)" '-'
+
+echo
+echo '### gerrit-project, required only where Gerrit serves the change'
+
+# Gerrit mode no longer requires gerrit-project up front: a mirror
+# serves the change without it. Where Gerrit has to, the step fails
+# naming the input.
+for project in '' ' '; do
+  checkout "$GERRIT_URL" "$project" "$REFSPEC" fail
+  check "no mirror, gerrit-project '$project': step fails" "$(outcome)" 'failed'
+  check "no mirror, gerrit-project '$project': names the input" "$(errors)" \
+    '::error::Input gerrit-project is required: the project has no GitHub mirror, so the change must come from Gerrit'
+  check "no mirror, gerrit-project '$project': no request to Gerrit" \
+    "$(cat "$WORK/requests.log")" ''
+  check_untouched "no mirror, gerrit-project '$project'"
+done
+
+# A mirror holding the branch but not the change, so the mirror fetch
+# fails and the step falls back to gerrit-url
+git init -q --bare "$WORK/lagging.git"
+git -C "$WORK/src" push -q "$WORK/lagging.git" "$BASE:refs/heads/main"
+NO_CHANGE="::error::fatal: couldn't find remote ref $REFSPEC"
+
+# gerrit-checkout on the mirror path, in a fresh clone of that mirror,
+# with the given gerrit-url and gerrit-project
+mirror_checkout() {
+  rm -rf "$WORK/ws"
+  git clone -q "$WORK/lagging.git" "$WORK/ws"
+  : > "$WORK/requests.log"
+  run_step gerrit-checkout "$WORK/ws" \
+    INPUT_GERRIT_URL="$1" INPUT_GERRIT_PROJECT="$2" \
+    INPUT_GERRIT_REFSPEC="$REFSPEC" INPUT_REF=refs/heads/main \
+    INPUT_FETCH_DEPTH=2 INPUT_SUBMODULES=false INPUT_TOKEN='test-token' \
+    MIRROR=present SERVER_URL=https://github.com
+}
+
+mirror_checkout "$GERRIT_URL" "$PROJECT"
+check 'mirror lacks the change: falls back to Gerrit' "$(outcome)" 'succeeded'
+check 'mirror lacks the change: HEAD is the change' \
+  "$(git -C "$WORK/ws" rev-parse HEAD)" "$CHANGE"
+
+mirror_checkout "$GERRIT_URL" ''
+check 'mirror lacks the change, no gerrit-project: step fails' \
+  "$(outcome)" 'failed'
+check 'mirror lacks the change, no gerrit-project: names the input' \
+  "$(errors | grep -c '^::error::Input gerrit-project is required: the mirror fetch failed')" 1
+check 'mirror lacks the change, no gerrit-project: keeps the mirror error' \
+  "$(errors | grep -cF "The mirror fetch reported: fatal: couldn't find remote ref $REFSPEC")" 1
+check 'mirror lacks the change, no gerrit-project: no request to Gerrit' \
+  "$(cat "$WORK/requests.log")" ''
+check 'mirror lacks the change, no gerrit-project: checked-out not set' \
+  "$(output checked-out)" ''
+
+mirror_checkout '' ''
+check 'mirror lacks the change, no gerrit-url: step fails' "$(outcome)" 'failed'
+check 'mirror lacks the change, no gerrit-url: mirror error unchanged' \
+  "$(errors)" "$NO_CHANGE"
 
 echo
 echo "Passed: $passed, failed: $failed"

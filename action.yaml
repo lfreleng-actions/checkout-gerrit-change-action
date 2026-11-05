@@ -19,7 +19,10 @@ inputs:
     default: ""
   gerrit-project:
     description: >
-      The project in Gerrit. Required when gerrit-refspec is set; ignored
+      The project in Gerrit. Recommended whenever gerrit-refspec is set,
+      and required when Gerrit serves the change: when the project has no
+      GitHub mirror, or the mirror lacks the change and the action falls
+      back to gerrit-url. A change the mirror serves needs none. Ignored
       in plain mode. Default: ""
     required: false
     default: ""
@@ -78,10 +81,12 @@ inputs:
       choice to actions/checkout: the reference or SHA for the event when
       checking out the repository that triggered the workflow, otherwise
       the default branch. Empty, Gerrit mode uses the triggering commit,
-      github.sha, unless gerrit-branch is set. When the project has no
-      GitHub mirror, only a branch (refs/heads/<branch>) is fetched, as
-      origin/<branch>; Gerrit does not hold the caller's commits, so a SHA
-      is ignored there. Default: ""
+      github.sha, for the repository that triggered the workflow, and
+      leaves the choice to actions/checkout for any other; gerrit-branch,
+      when set, wins over both. When the project has no GitHub mirror,
+      only a branch (refs/heads/<branch>) is fetched, as origin/<branch>;
+      Gerrit does not hold the caller's commits, so a SHA is ignored
+      there. Default: ""
     required: false
     default: ""
   token:
@@ -152,16 +157,18 @@ runs:
 
     # Choose the mode before anything else runs: with no gerrit-refspec,
     # the action is a plain checkout and every Gerrit-only step below
-    # skips. Gerrit mode fails here, naming the input, without a
-    # gerrit-project.
+    # skips. Gerrit mode needs no gerrit-project here: the
+    # gerrit-checkout step requires it only where Gerrit serves the
+    # change.
     - id: select-mode
       shell: bash
       env:
         SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
         INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
-        INPUT_GERRIT_PROJECT: ${{ inputs.gerrit-project }}
         INPUT_GERRIT_BRANCH: ${{ inputs.gerrit-branch }}
         INPUT_REF: ${{ inputs.ref }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        CALLER_REPOSITORY: ${{ github.repository }}
         DEFAULT_REF: ${{ github.sha }}
         INPUT_PERSIST_CREDENTIALS: ${{ inputs.persist-credentials }}
       run: source "$SCRIPTS_DIR/select-mode.sh"

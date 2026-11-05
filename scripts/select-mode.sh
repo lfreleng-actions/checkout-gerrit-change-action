@@ -7,15 +7,19 @@
 #
 # An empty gerrit-refspec selects plain mode: the action checks out
 # 'repository' at 'ref' as actions/checkout does, and every Gerrit-only
-# step skips. Any other value selects Gerrit mode, which then needs
-# gerrit-project. Outputs:
+# step skips. Any other value selects Gerrit mode, gerrit-project or
+# not: only the steps that fetch the change from Gerrit itself need it,
+# and they say so when they do. Outputs:
 #
 #   mode                 gerrit or plain
 #   ref                  what actions/checkout checks out: in Gerrit
 #                        mode refs/heads/<gerrit-branch> when that is
-#                        set, otherwise 'ref', or DEFAULT_REF (the
-#                        triggering commit) when 'ref' is empty; in
-#                        plain mode 'ref' as given, empty included, so
+#                        set, otherwise 'ref', or, when 'ref' is empty
+#                        and 'repository' names the calling repository
+#                        (CALLER_REPOSITORY, in any letter case),
+#                        DEFAULT_REF (the triggering commit); in plain
+#                        mode, and for another repository in Gerrit
+#                        mode, 'ref' as given, empty included, so
 #                        actions/checkout picks the event's ref for
 #                        the calling repository and the default branch
 #                        for another. Either way 'ref' is first trimmed
@@ -61,18 +65,21 @@ then
   mode=plain
 else
   mode=gerrit
-  if [ -z "$(trim "$INPUT_GERRIT_PROJECT")" ]
-  then
-    echo '::error::Input gerrit-project is required when gerrit-refspec is set'
-    exit 1
-  fi
   branch=$(trim "$INPUT_GERRIT_BRANCH")
   if [ -n "$branch" ]
   then
     ref="refs/heads/$branch"
   elif [ -z "$ref" ]
   then
-    ref=$DEFAULT_REF
+    # The triggering commit belongs to the calling repository, and
+    # another need not hold it. actions/checkout reads an empty
+    # 'repository' as the calling one.
+    repository=$(trim "$INPUT_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+    caller=$(trim "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+    if [ -z "$repository" ] || [ "$repository" = "$caller" ]
+    then
+      ref=$DEFAULT_REF
+    fi
   fi
 fi
 
