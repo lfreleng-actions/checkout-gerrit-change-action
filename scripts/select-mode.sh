@@ -14,9 +14,12 @@
 #   mode                 gerrit or plain
 #   ref                  what actions/checkout checks out: in Gerrit
 #                        mode refs/heads/<gerrit-branch> when that is
-#                        set, otherwise 'ref', or DEFAULT_REF (the
-#                        triggering commit) when 'ref' is empty; in
-#                        plain mode 'ref' as given, empty included, so
+#                        set, otherwise 'ref', or, when 'ref' is empty
+#                        and 'repository' names the calling repository
+#                        (CALLER_REPOSITORY, in any letter case),
+#                        DEFAULT_REF (the triggering commit); in plain
+#                        mode, and for another repository in Gerrit
+#                        mode, 'ref' as given, empty included, so
 #                        actions/checkout picks the event's ref for
 #                        the calling repository and the default branch
 #                        for another. Either way 'ref' is first trimmed
@@ -68,7 +71,15 @@ else
     ref="refs/heads/$branch"
   elif [ -z "$ref" ]
   then
-    ref=$DEFAULT_REF
+    # The triggering commit belongs to the calling repository, and
+    # another need not hold it. actions/checkout reads an empty
+    # 'repository' as the calling one.
+    repository=$(trim "$INPUT_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+    caller=$(trim "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')
+    if [ -z "$repository" ] || [ "$repository" = "$caller" ]
+    then
+      ref=$DEFAULT_REF
+    fi
   fi
 fi
 

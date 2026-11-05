@@ -81,10 +81,12 @@ inputs:
       choice to actions/checkout: the reference or SHA for the event when
       checking out the repository that triggered the workflow, otherwise
       the default branch. Empty, Gerrit mode uses the triggering commit,
-      github.sha, unless gerrit-branch is set. When the project has no
-      GitHub mirror, only a branch (refs/heads/<branch>) is fetched, as
-      origin/<branch>; Gerrit does not hold the caller's commits, so a SHA
-      is ignored there. Default: ""
+      github.sha, for the repository that triggered the workflow, and
+      leaves the choice to actions/checkout for any other; gerrit-branch,
+      when set, wins over both. When the project has no GitHub mirror,
+      only a branch (refs/heads/<branch>) is fetched, as origin/<branch>;
+      Gerrit does not hold the caller's commits, so a SHA is ignored
+      there. Default: ""
     required: false
     default: ""
   token:
@@ -165,6 +167,8 @@ runs:
         INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
         INPUT_GERRIT_BRANCH: ${{ inputs.gerrit-branch }}
         INPUT_REF: ${{ inputs.ref }}
+        INPUT_REPOSITORY: ${{ inputs.repository }}
+        CALLER_REPOSITORY: ${{ github.repository }}
         DEFAULT_REF: ${{ github.sha }}
         INPUT_PERSIST_CREDENTIALS: ${{ inputs.persist-credentials }}
       run: source "$SCRIPTS_DIR/select-mode.sh"

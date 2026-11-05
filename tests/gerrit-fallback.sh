@@ -483,6 +483,13 @@ check 'ref naming a commit: HEAD is the change' \
 check 'ref naming a commit: parent reachable for HEAD~1' \
   "$(git -C "$WORK/ws" rev-parse HEAD~1)" "$BASE"
 
+# Gerrit mode passes an empty ref for another repository
+REF='' checkout "$GERRIT_URL" "$PROJECT" "$REFSPEC" fail
+check 'empty ref: step succeeds' "$(outcome)" 'succeeded'
+check 'empty ref: no base fetched' "$(refs)" ''
+check 'empty ref: HEAD is the change' \
+  "$(git -C "$WORK/ws" rev-parse HEAD)" "$CHANGE"
+
 REF=refs/heads/no-such-branch checkout "$GERRIT_URL" "$PROJECT" "$REFSPEC" fail
 check 'ref naming a missing branch: step fails' "$(outcome)" 'failed'
 

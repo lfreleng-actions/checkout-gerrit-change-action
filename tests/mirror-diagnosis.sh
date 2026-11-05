@@ -476,6 +476,17 @@ reported 'empty, change-ref failure' empty error
 check 'empty, change-ref failure: says it has no branches' \
   "$(says 'org/empty has no branches')" yes
 
+# Gerrit mode passes an empty ref for another repository
+REF='' diagnose empty
+reported 'empty, empty ref' empty error
+check 'empty, empty ref: says it has no branches' \
+  "$(says 'org/empty has no branches')" yes
+
+REF='' diagnose lagging
+reported 'change ref missing, empty ref' lagging error
+check 'change ref missing, empty ref: names the ref' \
+  "$(says "has branches but not $REFSPEC")" yes
+
 REF=refs/heads/release/9 diagnose healthy
 reported 'branch missing' healthy error
 check 'branch missing: names the branch' \
@@ -510,6 +521,9 @@ silent 'healthy mirror, unrelated failure'
 
 REF="$(git -C "$WORK/src" rev-parse HEAD~1)" diagnose healthy
 silent 'healthy mirror, ref naming a commit'
+
+REF='' diagnose healthy
+silent 'healthy mirror, empty ref'
 
 for ref in main v1.0; do
   REF="$ref" diagnose healthy
