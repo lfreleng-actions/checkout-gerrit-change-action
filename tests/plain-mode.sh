@@ -7,7 +7,8 @@
 # gerrit-branch and persist-credentials.
 #
 # - The select-mode step picks the mode, the ref and the credential
-#   setting, and fails Gerrit mode without a gerrit-project.
+#   setting, and selects Gerrit mode by gerrit-refspec alone, with or
+#   without a gerrit-project.
 # - The step conditions in action.yaml skip every Gerrit-only step in
 #   plain mode, and pass the new inputs to actions/checkout.
 # - The remove-credentials step takes out what actions/checkout
@@ -228,14 +229,18 @@ REFSPEC='refs/changes/40/11540/1' PROJECT='releng/x' BRANCH='stable/x' \
 check 'Gerrit mode, empty ref, gerrit-branch: its branch' \
   "$(output ref)" 'refs/heads/stable/x'
 
+# As in v1.3.0, gerrit-refspec alone selects Gerrit mode: a mirror
+# serves the change without gerrit-project, so only gerrit-checkout,
+# where Gerrit serves it, requires the input
+check 'select-mode: gerrit-project not passed' \
+  "$(step_value select-mode INPUT_GERRIT_PROJECT)" ''
 for project in '' ' '; do
   REFSPEC='refs/changes/40/11540/1' PROJECT="$project" select_mode
-  check "Gerrit mode, gerrit-project '$project': fails" "$(outcome)" 'failed'
-  check "Gerrit mode, gerrit-project '$project': names the input" \
-    "$(errors)" \
-    '::error::Input gerrit-project is required when gerrit-refspec is set'
-  check "Gerrit mode, gerrit-project '$project': no mode set" \
-    "$(output mode)" ''
+  check "Gerrit mode, gerrit-project '$project': succeeds" \
+    "$(outcome)" 'succeeded'
+  check "Gerrit mode, gerrit-project '$project': Gerrit mode" \
+    "$(output mode)" 'gerrit'
+  check "Gerrit mode, gerrit-project '$project': no error" "$(errors)" ''
 done
 
 REF=$'main\n::warning::x' select_mode

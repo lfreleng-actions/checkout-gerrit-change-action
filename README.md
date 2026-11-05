@@ -21,7 +21,7 @@ Gerrit and GitHub-native runs alike; see [Modes](#modes).
 | Name                | Required | Default                  | Description                                                                                                                                                                                    |
 | ------------------- | -------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | gerrit-refspec      | False    | ""                       | The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z. Empty selects plain mode; see [Modes](#modes)                                                                                   |
-| gerrit-project      | False    | ""                       | The project in Gerrit. Gerrit mode requires it; plain mode ignores it                                                                                                                          |
+| gerrit-project      | False    | ""                       | The project in Gerrit. Recommended in Gerrit mode, and required when Gerrit serves the change; see [Modes](#modes). Plain mode ignores it                                                      |
 | gerrit-branch       | False    | ""                       | In Gerrit mode, when set, the action checks out `refs/heads/<gerrit-branch>` before fetching the change, in place of `ref`. Ignored in plain mode                                              |
 | delay               | False    | 10s                      | Delay to wait for replication to the GitHub mirror; not applied in plain mode, nor when the change comes from Gerrit because the project has no mirror                                         |
 | fetch-depth         | False    | 2                        | Number of commits to fetch, in both modes. 0 indicates all history for all branches and tags                                                                                                   |
@@ -53,8 +53,11 @@ Gerrit and GitHub-native runs alike; see [Modes](#modes).
 The action runs in one of two modes, chosen by `gerrit-refspec`:
 
 - **Gerrit mode**, with `gerrit-refspec` set: the action checks out
-  the change, as the rest of this document describes. It needs
-  `gerrit-project`, and fails naming the input without it.
+  the change, as the rest of this document describes. Pass
+  `gerrit-project` always: a change the mirror serves needs none, but
+  when Gerrit has to serve it, because the project has no mirror or the
+  mirror lacks the change and the action falls back to `gerrit-url`,
+  the action fails naming the input without it.
 - **Plain mode**, with `gerrit-refspec` empty: the action runs
   `actions/checkout` once, checking out `repository` at `ref` with
   `token`, `fetch-depth`, `fetch-tags`, `filter`, `submodules` and
@@ -350,7 +353,8 @@ rather than leaving the submodule empty.
       # Default: ""
       gerrit-refspec: "refs/changes/40/11540/1"
 
-      # The project in Gerrit; Gerrit mode requires it
+      # The project in Gerrit; recommended in Gerrit mode, and required
+      # when Gerrit, not the mirror, serves the change
       #
       # Default: ""
       gerrit-project: "releng/builder"

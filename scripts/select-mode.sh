@@ -7,8 +7,9 @@
 #
 # An empty gerrit-refspec selects plain mode: the action checks out
 # 'repository' at 'ref' as actions/checkout does, and every Gerrit-only
-# step skips. Any other value selects Gerrit mode, which then needs
-# gerrit-project. Outputs:
+# step skips. Any other value selects Gerrit mode, gerrit-project or
+# not: only the steps that fetch the change from Gerrit itself need it,
+# and they say so when they do. Outputs:
 #
 #   mode                 gerrit or plain
 #   ref                  what actions/checkout checks out: in Gerrit
@@ -61,11 +62,6 @@ then
   mode=plain
 else
   mode=gerrit
-  if [ -z "$(trim "$INPUT_GERRIT_PROJECT")" ]
-  then
-    echo '::error::Input gerrit-project is required when gerrit-refspec is set'
-    exit 1
-  fi
   branch=$(trim "$INPUT_GERRIT_BRANCH")
   if [ -n "$branch" ]
   then

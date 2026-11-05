@@ -19,7 +19,10 @@ inputs:
     default: ""
   gerrit-project:
     description: >
-      The project in Gerrit. Required when gerrit-refspec is set; ignored
+      The project in Gerrit. Recommended whenever gerrit-refspec is set,
+      and required when Gerrit serves the change: when the project has no
+      GitHub mirror, or the mirror lacks the change and the action falls
+      back to gerrit-url. A change the mirror serves needs none. Ignored
       in plain mode. Default: ""
     required: false
     default: ""
@@ -152,14 +155,14 @@ runs:
 
     # Choose the mode before anything else runs: with no gerrit-refspec,
     # the action is a plain checkout and every Gerrit-only step below
-    # skips. Gerrit mode fails here, naming the input, without a
-    # gerrit-project.
+    # skips. Gerrit mode needs no gerrit-project here: the
+    # gerrit-checkout step requires it only where Gerrit serves the
+    # change.
     - id: select-mode
       shell: bash
       env:
         SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
         INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
-        INPUT_GERRIT_PROJECT: ${{ inputs.gerrit-project }}
         INPUT_GERRIT_BRANCH: ${{ inputs.gerrit-branch }}
         INPUT_REF: ${{ inputs.ref }}
         DEFAULT_REF: ${{ github.sha }}
