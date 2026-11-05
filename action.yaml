@@ -3,15 +3,33 @@
 # SPDX-FileCopyrightText: 2025 The Linux Foundation
 
 name: "checkout-gerrit-change"
-description: "Checkout a Gerrit change, from its GitHub mirror or from Gerrit"
+description: >
+  Checkout a Gerrit change, from its GitHub mirror or from Gerrit; with no
+  change, checkout the repository as actions/checkout does
 
 inputs:
   gerrit-refspec:
-    description: "The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z"
-    required: true
+    description: >
+      The Gerrit refspec for the change, eg: refs/changes/YY/NNYY/Z. Empty
+      selects plain mode: the action checks out 'repository' at 'ref' as
+      actions/checkout does, and ignores the Gerrit-only inputs
+      (gerrit-project, gerrit-branch, gerrit-url, delay, on-unavailable).
+      Default: ""
+    required: false
+    default: ""
   gerrit-project:
-    description: "The project in Gerrit"
-    required: true
+    description: >
+      The project in Gerrit. Required when gerrit-refspec is set; ignored
+      in plain mode. Default: ""
+    required: false
+    default: ""
+  gerrit-branch:
+    description: >
+      The Gerrit branch the change targets. In Gerrit mode, when set, the
+      action checks out refs/heads/<gerrit-branch> before it fetches the
+      change, in place of 'ref'. Ignored in plain mode. Default: ""
+    required: false
+    default: ""
   delay:
     description: >
       Delay to wait for replication to the GitHub mirror to finish. Not
@@ -24,23 +42,48 @@ inputs:
       Number of commits to fetch. 0 indicates all history for all branches
       and tags. The default of 2 guarantees the checked-out change commit's
       parent is reachable, so parent-relative operations (e.g. git diff
-      HEAD~1) work even when the change has already merged. Default 2
+      HEAD~1) work even when the change has already merged. Plain mode
+      keeps the same default. Default 2
     required: false
     default: "2"
+  fetch-tags:
+    description: >
+      Whether to fetch tags, even when fetch-depth > 0. Passed to
+      actions/checkout in both modes; the Gerrit fallback, for a project
+      with no mirror, ignores it. Default: false
+    required: false
+    default: "false"
+  filter:
+    description: >
+      Partially clone against a given filter, eg: blob:none. Passed to
+      actions/checkout in both modes; the Gerrit fallback, for a project
+      with no mirror, ignores it. Default: ""
+    required: false
+    default: ""
+  persist-credentials:
+    description: >
+      Whether to leave the token in the local git config. Plain mode
+      passes it to actions/checkout. Gerrit mode persists the token while
+      it fetches the change, which needs it, and with `false` removes it
+      before the action ends. Default: true
+    required: false
+    default: "true"
   repository:
     description: "Repository name with owner. For example actions/checkout"
     required: false
     default: ${{ github.repository }}
   ref:
     description: >
-      The branch, tag or SHA to checkout. When checking out the repository that
-      triggered a workflow, this defaults to the reference or SHA for that
-      event. Otherwise, uses the default branch. When the project has no
+      The branch, tag or SHA to checkout. Empty, plain mode leaves the
+      choice to actions/checkout: the reference or SHA for the event when
+      checking out the repository that triggered the workflow, otherwise
+      the default branch. Empty, Gerrit mode uses the triggering commit,
+      github.sha, unless gerrit-branch is set. When the project has no
       GitHub mirror, only a branch (refs/heads/<branch>) is fetched, as
       origin/<branch>; Gerrit does not hold the caller's commits, so a SHA
-      is ignored there.
+      is ignored there. Default: ""
     required: false
-    default: ${{ github.sha }}
+    default: ""
   token:
     description: >
       Personal Access token (PAT) used to fetch the repository. The PAT is configured
@@ -84,10 +127,17 @@ inputs:
 outputs:
   checked-out:
     description: >
-      `true` once the change is checked out, otherwise `false`: when
+      `true` once the change, or in plain mode the repository, is checked
+      out, otherwise `false`: when
       `on-unavailable: skip` skipped it, or when the action failed and
       the caller set continue-on-error
-    value: ${{ steps.gerrit-checkout.outputs.checked-out || 'false' }}
+    value: >-
+      ${{ steps.gerrit-checkout.outputs.checked-out
+      || steps.plain-checkout.outputs.checked-out || 'false' }}
+  mode:
+    description: >
+      `gerrit` when gerrit-refspec is set, `plain` when it is empty
+    value: ${{ steps.select-mode.outputs.mode }}
 
 runs:
   using: "composite"
@@ -100,6 +150,22 @@ runs:
       shell: bash
       run: source "$GITHUB_ACTION_PATH/scripts/stage-scripts.sh"
 
+    # Choose the mode before anything else runs: with no gerrit-refspec,
+    # the action is a plain checkout and every Gerrit-only step below
+    # skips. Gerrit mode fails here, naming the input, without a
+    # gerrit-project.
+    - id: select-mode
+      shell: bash
+      env:
+        SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
+        INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
+        INPUT_GERRIT_PROJECT: ${{ inputs.gerrit-project }}
+        INPUT_GERRIT_BRANCH: ${{ inputs.gerrit-branch }}
+        INPUT_REF: ${{ inputs.ref }}
+        DEFAULT_REF: ${{ github.sha }}
+        INPUT_PERSIST_CREDENTIALS: ${{ inputs.persist-credentials }}
+      run: source "$SCRIPTS_DIR/select-mode.sh"
+
     # Runs before the checkout below, which is what fails when the
     # target is wrong: 'repository' defaults to github.repository, and
     # inside a reusable workflow that names the CALLER rather than the
@@ -108,6 +174,7 @@ runs:
     # dies on a ref the caller does not carry. Warn first so the log
     # explains the failure that follows.
     - id: check-target
+      if: steps.select-mode.outputs.mode == 'gerrit'
       shell: bash
       env:
         SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
@@ -126,6 +193,7 @@ runs:
     # there is nowhere else to go, nor for the calling repository,
     # which the workflow is running in and so must exist.
     - id: probe-mirror
+      if: steps.select-mode.outputs.mode == 'gerrit'
       shell: bash
       env:
         SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
@@ -138,24 +206,44 @@ runs:
       run: source "$SCRIPTS_DIR/probe-mirror.sh"
 
     - id: delay-checkout
-      if: steps.probe-mirror.outputs.mirror != 'absent'
+      if: >-
+        steps.select-mode.outputs.mode == 'gerrit'
+        && steps.probe-mirror.outputs.mirror != 'absent'
       shell: bash
       env:
         INPUT_DELAY: ${{ inputs.delay }}
       run: sleep -- "$INPUT_DELAY"
-    # The persisted checkout credentials are intentionally retained so the
-    # 'git fetch origin' step below can reach the (possibly private)
-    # repository; the token is configured into git by this checkout and the
-    # action uploads no artifacts that could leak the credential.
-    - if: steps.probe-mirror.outputs.mirror != 'absent'
+    # The only checkout in plain mode, and the mirror clone in Gerrit
+    # mode. Gerrit mode always persists the credentials, so the 'git
+    # fetch origin' step below can reach the (possibly private)
+    # repository; with persist-credentials: false the remove-credentials
+    # step takes them out again once that fetch is done. Plain mode
+    # persists them only as the caller asks. The action uploads no
+    # artifacts that could leak the credential.
+    - id: checkout
+      if: >-
+        steps.select-mode.outputs.mode == 'plain'
+        || steps.probe-mirror.outputs.mirror != 'absent'
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
         fetch-depth: ${{ inputs.fetch-depth }}
+        fetch-tags: ${{ inputs.fetch-tags }}
+        filter: ${{ inputs.filter }}
         repository: ${{ inputs.repository }}
-        ref: ${{ inputs.ref }}
+        ref: ${{ steps.select-mode.outputs.ref }}
         token: ${{ inputs.token }}
         submodules: ${{ inputs.submodules }}
-        persist-credentials: true # zizmor: ignore[artipacked]
+        # zizmor: ignore[artipacked]
+        persist-credentials: >-
+          ${{ steps.select-mode.outputs.mode == 'gerrit'
+          || steps.select-mode.outputs.persist-credentials == 'true' }}
+
+    # A composite action cannot read another action's outcome into its
+    # outputs, so record the plain checkout's success here
+    - id: plain-checkout
+      if: steps.select-mode.outputs.mode == 'plain'
+      shell: bash
+      run: echo "checked-out=true" >> "$GITHUB_OUTPUT"
 
     # Fetch the change and check it out. Where the mirror exists,
     # actions/checkout above cloned it, and the change comes from the
@@ -169,6 +257,7 @@ runs:
     # of the clone actions/checkout would have made, and fetch what that
     # clone would have held.
     - id: gerrit-checkout
+      if: steps.select-mode.outputs.mode == 'gerrit'
       shell: bash --noprofile --norc {0}
       env:
         SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
@@ -177,12 +266,32 @@ runs:
         INPUT_GERRIT_PROJECT: ${{ inputs.gerrit-project }}
         INPUT_FETCH_DEPTH: ${{ inputs.fetch-depth }}
         INPUT_SUBMODULES: ${{ inputs.submodules }}
-        INPUT_REF: ${{ inputs.ref }}
+        INPUT_REF: ${{ steps.select-mode.outputs.ref }}
         INPUT_TOKEN: ${{ inputs.token }}
         MIRROR: ${{ steps.probe-mirror.outputs.mirror }}
         ON_UNAVAILABLE: ${{ steps.probe-mirror.outputs.on-unavailable }}
         SERVER_URL: ${{ github.server_url }}
       run: source "$SCRIPTS_DIR/gerrit-checkout.sh"
+
+    # Gerrit mode with persist-credentials: false: take out the token
+    # actions/checkout persisted for the fetch above, leaving none in the
+    # clone. Runs whenever actions/checkout started, whether it, or the
+    # fetch after it, succeeded, failed or was cancelled, since it may
+    # have persisted the token before it stopped. A checkout that never
+    # started is skipped, so a workspace the Gerrit fallback left
+    # untouched stays so; with nothing persisted, the step does nothing.
+    - id: remove-credentials
+      if: >-
+        always()
+        && steps.select-mode.outputs.mode == 'gerrit'
+        && steps.select-mode.outputs.persist-credentials == 'false'
+        && steps.checkout.outcome != 'skipped'
+        && steps.checkout.outcome != ''
+      shell: bash
+      env:
+        SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
+        SERVER_URL: ${{ github.server_url }}
+      run: source "$SCRIPTS_DIR/remove-credentials.sh"
 
     # Once the action has failed on the mirror path, say what state the
     # mirror is in and who can fix it: missing, archived, empty, without
@@ -192,12 +301,12 @@ runs:
     # never changes the outcome. It says nothing when the mirror looks
     # healthy, since the failure then lies elsewhere.
     - id: diagnose-mirror
-      if: failure() && steps.probe-mirror.outputs.mirror != 'absent'
+      if: failure() && steps.select-mode.outputs.mode == 'gerrit' && steps.probe-mirror.outputs.mirror != 'absent'
       shell: bash
       env:
         SCRIPTS_DIR: ${{ steps.stage-scripts.outputs.dir }}
         INPUT_REPOSITORY: ${{ inputs.repository }}
-        INPUT_REF: ${{ inputs.ref }}
+        INPUT_REF: ${{ steps.select-mode.outputs.ref }}
         INPUT_GERRIT_REFSPEC: ${{ inputs.gerrit-refspec }}
         INPUT_GERRIT_URL: ${{ inputs.gerrit-url }}
         INPUT_DELAY: ${{ inputs.delay }}

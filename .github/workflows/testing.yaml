@@ -73,3 +73,294 @@ jobs:
       - name: 'Check the mirror diagnosis after a failure'
         shell: bash
         run: bash tests/mirror-diagnosis.sh
+
+      # Runs the select-mode and remove-credentials steps, and reads the
+      # step conditions out of action.yaml, against local repositories.
+      - name: 'Check plain mode and credential removal'
+        shell: bash
+        run: bash tests/plain-mode.sh
+
+  ### The action itself, with no Gerrit change ###
+  test-plain-mode:
+    name: 'Test Plain Mode'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # The action runs from this checkout, as './'. GitHub's '$/'
+      # self-repository syntax would need no checkout, but actionlint
+      # does not accept it yet, so zizmor's self-repository finding is
+      # ignored on each use below.
+      - name: 'Checkout action'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Gerrit-only inputs are set to values that would fail or
+      # stall the job if any Gerrit-only step ran: a delay longer than
+      # the job's timeout, an on-unavailable the mirror probe rejects,
+      # and a gerrit-branch that does not exist.
+      - name: 'Checkout in plain mode, without credentials'
+        id: plain
+        uses: ./  # zizmor: ignore[self-repository]
+        with:
+          gerrit-refspec: ''
+          gerrit-project: ''
+          gerrit-branch: 'no-such-branch'
+          gerrit-url: 'https://gerrit.invalid'
+          delay: '600s'
+          on-unavailable: 'invalid'
+          ref: ${{ github.sha }}
+          fetch-depth: '1'
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: 'Verify the plain checkout'
+        shell: bash
+        env:
+          MODE: ${{ steps.plain.outputs.mode }}
+          CHECKED_OUT: ${{ steps.plain.outputs.checked-out }}
+          WANT: ${{ github.sha }}
+        run: |
+          set -x
+          test "$MODE" = plain
+          test "$CHECKED_OUT" = true
+          test "$(git rev-parse HEAD)" = "$WANT"
+          test "$(git rev-list --count HEAD)" = 1
+          test -n "$(git tag -l)"
+          test -z "$(git config --local --get-regexp '^http\..*\.extraheader$' || true)"
+          test -z "$(git config --local --get-regexp '^includeif\.' || true)"
+
+      # actions/checkout reuses this workspace and keeps the tags the
+      # step above fetched; fetch-tags: false only stops it fetching
+      # more. Start the defaults scenario with none.
+      - name: 'Remove the fetched tags'
+        shell: bash
+        run: |
+          set -x
+          git for-each-ref --format='delete %(refname)' refs/tags |
+            git update-ref --stdin
+          test -z "$(git tag -l)"
+
+      # No 'ref': actions/checkout picks the triggering commit
+      - name: 'Checkout in plain mode, with defaults'
+        id: defaults
+        uses: ./  # zizmor: ignore[self-repository]
+
+      - name: 'Verify the defaults'
+        shell: bash
+        env:
+          MODE: ${{ steps.defaults.outputs.mode }}
+          CHECKED_OUT: ${{ steps.defaults.outputs.checked-out }}
+          WANT: ${{ github.sha }}
+        run: |
+          set -x
+          test "$MODE" = plain
+          test "$CHECKED_OUT" = true
+          test "$(git rev-parse HEAD)" = "$WANT"
+          git rev-parse --verify -q 'HEAD~1^{commit}'
+          test -z "$(git tag -l)"
+          git config --local --get-regexp '^includeif\.' |
+            grep -q 'git-credentials-'
+
+      # Another repository with no 'ref' gets its default branch, as
+      # actions/checkout chooses it, not this workflow's commit. It
+      # replaces the workspace, so it runs last, before the restore.
+      - name: 'Checkout another repository in plain mode, without ref'
+        id: other
+        uses: ./  # zizmor: ignore[self-repository]
+        with:
+          repository: 'lfreleng-actions/harden-runner-block-action'
+          fetch-depth: '1'
+          persist-credentials: false
+
+      - name: 'Verify the default branch of the other repository'
+        shell: bash
+        env:
+          MODE: ${{ steps.other.outputs.mode }}
+          CHECKED_OUT: ${{ steps.other.outputs.checked-out }}
+          URL: >-
+            ${{ github.server_url }}/lfreleng-actions/harden-runner-block-action
+        run: |
+          set -x
+          test "$MODE" = plain
+          test "$CHECKED_OUT" = true
+          test "$(git remote get-url origin)" = "$URL"
+          head=$(git ls-remote --symref origin HEAD)
+          default=$(awk '$1 == "ref:" { sub("^refs/heads/", "", $2); print $2 }' <<< "$head")
+          test -n "$default"
+          test "$(git symbolic-ref --short HEAD)" = "$default"
+          test "$(git rev-parse HEAD)" = "$(awk '$2 == "HEAD" && $1 != "ref:" { print $1 }' <<< "$head")"
+
+      # At post-job cleanup the runner loads each 'uses: ./' step's
+      # action from the workspace again. With another repository
+      # checked out there, it loads that repository's action file and
+      # the job fails. Restore this repository after any scenario that
+      # checks out another one, even when that scenario failed.
+      - name: 'Restore this repository for post-job cleanup'
+        if: always()
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+  ### The action in Gerrit mode, with this repository as the mirror ###
+  test-gerrit-mode:
+    name: 'Test Gerrit Mode'
+    runs-on: 'ubuntu-latest'
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      # Load the egress allow-list out-of-band from the
+      # organisation's .github repository and publish it as
+      # $CONNECTION_ALLOW_LIST for the harden-runner step below.
+      # yamllint disable-line rule:line-length
+      - uses: lfreleng-actions/harden-runner-block-action@2fed66c9c36c4687c31ca349b925b81ec629673f  # v0.15.0
+        with:
+          config: '@6d4a65c5601afd6c2fbe52bda4b0024b132f265d'  # v0.19.0
+
+      - name: 'Harden runner (block)'
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        with:
+          egress-policy: 'block'
+          allowed-endpoints: >
+            ${{ env.CONNECTION_ALLOW_LIST }}
+
+      # The action runs from this checkout, as './'. GitHub's '$/'
+      # self-repository syntax would need no checkout, but actionlint
+      # does not accept it yet, so zizmor's self-repository finding is
+      # ignored on each use below.
+      - name: 'Checkout action'
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The commit under test stands in for the change: Gerrit mode
+      # fetches the refspec from the mirror, and any ref it holds will
+      # do. 'ref' names a missing branch, so the checkout succeeds only
+      # if gerrit-branch takes its place.
+      - name: 'Checkout in Gerrit mode, with gerrit-branch'
+        id: branch
+        uses: ./  # zizmor: ignore[self-repository]
+        with:
+          gerrit-refspec: ${{ github.sha }}
+          gerrit-project: 'checkout-gerrit-change-action'
+          gerrit-branch: 'main'
+          ref: 'refs/heads/no-such-branch'
+          delay: '0s'
+          persist-credentials: false
+
+      - name: 'Verify gerrit-branch and credential removal'
+        shell: bash
+        env:
+          MODE: ${{ steps.branch.outputs.mode }}
+          CHECKED_OUT: ${{ steps.branch.outputs.checked-out }}
+          WANT: ${{ github.sha }}
+        run: |
+          set -x
+          test "$MODE" = gerrit
+          test "$CHECKED_OUT" = true
+          test "$(git rev-parse HEAD)" = "$WANT"
+          git rev-parse --verify -q refs/remotes/origin/main
+          test -z "$(git config --local --get-regexp '^http\..*\.extraheader$' || true)"
+          test -z "$(git config --local --get-regexp '^includeif\.' || true)"
+
+      - name: 'Checkout in Gerrit mode, with defaults'
+        id: defaults
+        uses: ./  # zizmor: ignore[self-repository]
+        with:
+          gerrit-refspec: ${{ github.sha }}
+          gerrit-project: 'checkout-gerrit-change-action'
+          gerrit-branch: ''
+          ref: 'refs/heads/main'
+          delay: '0s'
+
+      - name: 'Verify ref and persisted credentials'
+        shell: bash
+        env:
+          MODE: ${{ steps.defaults.outputs.mode }}
+          CHECKED_OUT: ${{ steps.defaults.outputs.checked-out }}
+          WANT: ${{ github.sha }}
+        run: |
+          set -x
+          test "$MODE" = gerrit
+          test "$CHECKED_OUT" = true
+          test "$(git rev-parse HEAD)" = "$WANT"
+          git rev-parse --verify -q refs/remotes/origin/main
+          git config --local --get-regexp '^includeif\.' |
+            grep -q 'git-credentials-'
+
+      - name: 'Checkout in Gerrit mode, without gerrit-project'
+        id: no-project
+        continue-on-error: true
+        uses: ./  # zizmor: ignore[self-repository]
+        with:
+          gerrit-refspec: ${{ github.sha }}
+          delay: '0s'
+
+      - name: 'Verify the missing gerrit-project fails'
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.no-project.outcome }}
+          CHECKED_OUT: ${{ steps.no-project.outputs.checked-out }}
+        run: |
+          set -x
+          test "$OUTCOME" = failure
+          test "$CHECKED_OUT" = false
+
+      # The defaults scenario above left credentials in the clone, so a
+      # removal step that did not run would leave them in place
+      - name: 'Confirm credentials are persisted before the failure'
+        shell: bash
+        run: |
+          set -x
+          git config --local --get-regexp '^includeif\.' |
+            grep -q 'git-credentials-'
+
+      # actions/checkout persists the token, then fails fetching a
+      # branch the mirror lacks; the removal step must still run
+      - name: 'Checkout in Gerrit mode, failing, without credentials'
+        id: failed-checkout
+        continue-on-error: true
+        uses: ./  # zizmor: ignore[self-repository]
+        with:
+          gerrit-refspec: ${{ github.sha }}
+          gerrit-project: 'checkout-gerrit-change-action'
+          ref: 'refs/heads/no-such-branch'
+          delay: '0s'
+          persist-credentials: false
+
+      - name: 'Verify credential removal after a failed checkout'
+        shell: bash
+        env:
+          OUTCOME: ${{ steps.failed-checkout.outcome }}
+          MODE: ${{ steps.failed-checkout.outputs.mode }}
+          CHECKED_OUT: ${{ steps.failed-checkout.outputs.checked-out }}
+        run: |
+          set -x
+          test "$OUTCOME" = failure
+          test "$MODE" = gerrit
+          test "$CHECKED_OUT" = false
+          test -z "$(git config --local --get-regexp '^http\..*\.extraheader$' || true)"
+          test -z "$(git config --local --get-regexp '^includeif\.' || true)"
