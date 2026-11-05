@@ -423,9 +423,9 @@ requests() {
 
 echo '### The step in action.yaml'
 
-check 'runs only after a failure, and not on the Gerrit fallback' \
+check 'runs only after a failure in Gerrit mode, and not on the Gerrit fallback' \
   "$(step_field diagnose-mirror if)" \
-  "failure() && steps.probe-mirror.outputs.mirror != 'absent'"
+  "failure() && steps.select-mode.outputs.mode == 'gerrit' && steps.probe-mirror.outputs.mirror != 'absent'"
 check 'is the last step, so it follows every failure' \
   "$(grep -E '^    - ' "$REPO_ROOT/action.yaml" | tail -n 1)" \
   '    - id: diagnose-mirror'
