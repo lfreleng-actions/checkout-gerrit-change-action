@@ -12,8 +12,6 @@ Gerrit and GitHub-native runs alike; see [Modes](#modes).
 
 ## checkout-gerrit-change-action
 
-[![pre-commit.ci status](https://results.pre-commit.ci/badge/github/lfit/checkout-gerrit-change-action/main.svg)](https://results.pre-commit.ci/latest/github/lfit/checkout-gerrit-change-action/main)
-
 ## Inputs
 
 <!-- markdownlint-disable MD013 -->
